@@ -402,6 +402,30 @@
     });
   }
 
+  /* ---------- 剪貼簿圖片（貼進輸入框 → 走 buffer，同截圖流程） ---------- */
+  function blobToDataUrl(blob) {
+    return new Promise((resolve, reject) => {
+      const r = new FileReader();
+      r.onload = () => resolve(r.result);
+      r.onerror = reject;
+      r.readAsDataURL(blob);
+    });
+  }
+
+  async function handlePastedImage(file) {
+    if (!file) return;
+    try {
+      toast('正在上傳剪貼簿圖片…');
+      const path = await uploadBlob(file, 'clipboard.png');
+      const preview = await blobToDataUrl(file);
+      pending.push({ kind: 'image', path, preview });
+      renderPending();
+      toast('圖片已加入，輸入訊息後送出（共 ' + pending.length + ' 個附件）');
+    } catch (e) {
+      toast('圖片上傳失敗：' + (e.message || e));
+    }
+  }
+
   /* ---------- 附件上傳（檔案落地伺服器 → 回傳絕對路徑） ---------- */
   async function uploadBlob(blob, name) {
     const resp = await fetch(cfg.uploadUrl + '?name=' + encodeURIComponent(name), {
@@ -536,6 +560,16 @@
   els.btnTest.addEventListener('click', testConnection);
 
   els.input.addEventListener('input', autoResize);
+  els.input.addEventListener('paste', (e) => {
+    const items = (e.clipboardData && e.clipboardData.items) || [];
+    for (const item of items) {
+      if (item.type && item.type.startsWith('image/')) {
+        e.preventDefault();
+        handlePastedImage(item.getAsFile());
+        break;
+      }
+    }
+  });
   els.input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
