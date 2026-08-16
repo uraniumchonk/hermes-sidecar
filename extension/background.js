@@ -1,4 +1,4 @@
-// Meow Agent Panel - background service worker
+// Hermes Sidecar - background service worker
 // 唯一職責：點工具列圖示時打開原生側邊欄
 
 chrome.runtime.onInstalled.addListener(() => {

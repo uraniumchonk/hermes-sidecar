@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Hermes Sidecar",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Hermes Agent 的瀏覽器側掛面板：原生 Side Panel 直連 gateway API Server。",
   "minimum_chrome_version": "114",
   "permissions": ["sidePanel", "storage", "scripting", "tabs"],

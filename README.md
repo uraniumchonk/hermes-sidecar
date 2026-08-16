@@ -1,66 +1,77 @@
 # Hermes Sidecar
 
-Hermes Agent 的瀏覽器側掛面板：Chrome / Edge 原生 Side Panel extension，直連
-Hermes gateway 的 API Server，把 agent 常駐在瀏覽器右側。
+A browser side panel for [Hermes Agent](https://hermes-agent.nousresearch.com/):
+a lightweight Chrome / Edge extension that keeps your Hermes agent docked to
+the right side of the browser via the native Side Panel API.
 
-命名由來：重型機車旁那台側掛車（sidecar）——載著你的 agent 陪你上網。
+The name comes from the motorcycle sidecar — it rides along next to you while
+you browse.
 
-## 功能
+## Features
 
-- 聊天 + markdown 渲染 + SSE 串流 + 工具呼叫卡片（依訊息順序排列）
-- 截圖按鈕：抓目前網頁畫面 → 上傳伺服器 → 路徑注入訊息 → agent 自己讀
-- 讀取頁面按鈕：抓目前網頁明文文字（帶網址）→ 送給 agent
-- 剪貼簿圖片：Ctrl+V 貼圖進輸入框，走同一條上傳 buffer 流程
-- 附件 buffer：截圖 / 頁面文字先暫存，輸入訊息後才一起送出，可累積多張
-- 停止按鈕：串流中可中止並保留已產出內容
-- 極窄模式：可塞進超窄側邊欄，間距最小化
-- 拖曳調寬：瀏覽器原生 side panel 支援
+- Chat with markdown rendering, SSE streaming, and in-order tool call cards
+- Capture button: screenshot the current page, upload to your server, inject
+  the server path into the message, and let the agent read it itself
+- Read page button: grab the visible page text (prefixed with the URL) and
+  send it to the agent
+- Clipboard images: paste (Ctrl+V) an image anywhere in the panel — it goes
+  through the same upload-and-buffer flow
+- Attachment buffer: screenshots and page texts accumulate first and are only
+  sent together with the message you type (multiple screenshots supported)
+- Stop button: abort mid-stream while keeping the content produced so far
+- Ultra-narrow mode: minimal spacing, wraps at any width
+- Auto UI language: Traditional Chinese / English based on the browser locale
+- Width is adjustable by dragging the panel edge (native side panel behavior)
 
-## 架構
+## Architecture
 
 ```
-Chrome/Edge 側邊欄 (extension/)
-  ├─ sidepanel.html / app.js   聊天 UI
-  ├─ background.js             點圖示開側邊欄
-  └─ vendor/                   marked + DOMPurify（本地化）
+Chrome/Edge side panel (extension/)
+  ├─ sidepanel.html / app.js   chat UI (i18n, SSE, buffer)
+  ├─ background.js             open panel on toolbar click
+  └─ vendor/                   marked + DOMPurify (localized copies)
         │  HTTP (Bearer API_SERVER_KEY)
         ▼
-Hermes gateway api_server :30001/v1/chat/completions
-        │  POST raw bytes（截圖）
+Hermes gateway api_server  :30001/v1/chat/completions
+        │  POST raw bytes (screenshots / clipboard images)
         ▼
-upload_server.py :18778 → 存檔 uploads/ → 回傳絕對路徑 → 路徑注入訊息
+upload_server.py :18778  → saves to uploads/ → returns absolute path
+        → the path is injected into the message for the agent to read
 ```
 
-## 前置：Hermes 端設定
+## Hermes-side prerequisites
 
-在 gateway profile 的 `.env`：
+In the gateway profile's `.env`:
 
 ```
 API_SERVER_ENABLED=true
 API_SERVER_PORT=30001
-API_SERVER_HOST=0.0.0.0          # 讓其他機器可連
-API_SERVER_KEY=<你的 key>
-API_SERVER_CORS_ORIGINS=*        # 放行 chrome-extension:// Origin（必要）
+API_SERVER_HOST=0.0.0.0          # so other machines can reach it
+API_SERVER_KEY=<your key>
+API_SERVER_CORS_ORIGINS=*        # allow the chrome-extension:// Origin (required)
 ```
 
-改完重啟 gateway。防火牆（可選）：只放行信任來源的 30001 / 18778。
+Restart the gateway afterwards. Optionally restrict 30001 / 18778 with a
+firewall to trusted sources only.
 
-## 安裝
+## Installation
 
-### extension（瀏覽器）
+### Extension
 
-1. 開 `chrome://extensions`（Edge 用 `edge://extensions`）
-2. 開發人員模式 → 載入未封裝項目 → 選 `extension/` 資料夾
-3. 點工具列圖示開側邊欄，第一次自動彈設定：填端點、API Key、模型
-4. 側邊欄右上角「+」= 新對話，雙擊 = 開啟設定
+1. Open `chrome://extensions` (or `edge://extensions`)
+2. Enable Developer mode → Load unpacked → select the `extension/` folder
+3. Click the toolbar icon to open the side panel. On first launch the settings
+   dialog opens automatically: fill in endpoint, API key, and model
+4. The `+` button in the top-right corner starts a new chat; double-click it
+   to reopen settings
 
-### upload_server（附件接收後端）
+### upload_server (attachment receiver)
 
 ```bash
 python3 upload_server.py --port 18778 --dir ~/hermes-sidecar/uploads
 ```
 
-systemd 範例（bind 0.0.0.0 + 應用層 IP 白名單）：
+Example systemd unit (binds 0.0.0.0, with an application-level IP allowlist):
 
 ```ini
 [Unit]
@@ -75,19 +86,20 @@ Restart=always
 WantedBy=default.target
 ```
 
-白名單在 `upload_server.py` 的 `ALLOWED_CLIENTS`（預設 192.168.0.10 / 127.0.0.1）。
+The allowlist lives in `ALLOWED_CLIENTS` inside `upload_server.py`
+(defaults to 192.168.0.10 / 127.0.0.1 — adjust for your LAN).
 
-## 設定
+## Settings
 
-| 欄位 | 預設 | 說明 |
-|------|------|------|
-| 端點 | `http://192.168.0.160:30001/v1/chat/completions` | Hermes gateway |
-| API Key | 空 | gateway 的 API_SERVER_KEY |
-| 模型 | `qwen-27b-default` | gateway 接受的模型名 |
-| 上傳端點 | `http://192.168.0.160:18778/upload` | 附件接收 |
+| Field | Default | Notes |
+|-------|---------|-------|
+| Endpoint | `http://192.168.0.160:30001/v1/chat/completions` | Hermes gateway |
+| API Key | empty | gateway `API_SERVER_KEY` |
+| Model | `qwen-27b-default` | any model name the gateway accepts |
+| Upload endpoint | `http://192.168.0.160:18778/upload` | attachment receiver |
 
-## 授權
+## License
 
-MIT。`extension/vendor/` 內含 [marked](https://github.com/markedjs/marked)
-（MIT）與 [DOMPurify](https://github.com/cure53/DOMPurify)（Apache-2.0）的
-本地化副本。
+MIT. `extension/vendor/` bundles local copies of
+[marked](https://github.com/markedjs/marked) (MIT) and
+[DOMPurify](https://github.com/cure53/DOMPurify) (Apache-2.0).
