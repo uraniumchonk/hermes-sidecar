@@ -65,29 +65,61 @@ firewall to trusted sources only.
 4. The `+` button in the top-right corner starts a new chat; double-click it
    to reopen settings
 
-### upload_server (attachment receiver)
+### upload_server (attachment receiver + LAN file share)
 
 ```bash
-python3 upload_server.py --port 18778 --dir ~/hermes-sidecar/uploads
+python3 upload_server.py --port 18778 --dir ~/agent-sidepanel/uploads
 ```
 
-Example systemd unit (binds 0.0.0.0, with an application-level IP allowlist):
+Options:
 
-```ini
-[Unit]
-Description=Hermes Sidecar upload receiver
-After=network.target
+| Flag | Default | Notes |
+|------|---------|-------|
+| `--port` | `18778` | listen port |
+| `--dir` | `~/agent-sidepanel/uploads` | storage directory |
+| `--public-host` | `192.168.0.160` | host used in returned URLs |
+| `--max-age-days` | `7` | auto-delete files older than N days (0 = never) |
 
-[Service]
-ExecStart=/usr/bin/python3 /home/USER/hermes-sidecar/upload_server.py --port 18778
-Restart=always
+Files are stored with a **uuid filename** (collision-free, no management
+needed — just `cp` over the directory or re-upload freely). A background
+thread prunes files older than `--max-age-days` every hour.
 
-[Install]
-WantedBy=default.target
+Endpoints:
+
+```
+POST /upload?name=<filename>   body = raw bytes
+     → {"path": "/abs/path", "url": "http://192.168.0.160:18778/files/<uuid>.ext"}
+GET  /health                  → {"ok": true}
+GET  /files/<name>            → file bytes with correct Content-Type
 ```
 
-The allowlist lives in `ALLOWED_CLIENTS` inside `upload_server.py`
-(defaults to 192.168.0.10 / 127.0.0.1 — adjust for your LAN).
+`GET /files` is open to the whole LAN (192.168.0.0/24 + localhost) and sends
+the proper `Content-Type`, so images render directly in markdown:
+
+```markdown
+![img](http://192.168.0.160:18778/files/<uuid>.jpg)
+[notes](http://192.168.0.160:18778/files/<uuid>.txt)
+```
+
+### fileshare MCP (mcp.py)
+
+Single tool `share_file(path)` — upload a local file, get back the LAN URL.
+Stdio transport, pure stdlib, zero dependencies.
+
+```yaml
+# ~/.hermes/profiles/<p>/config.yaml
+mcp_servers:
+  fileshare:
+    command: python3
+    args:
+      - /home/USER/hermes-sidecar/mcp.py
+    env:
+      FILESHARE_URL: http://127.0.0.1:18778   # or http://192.168.0.160:18778 for remote
+    enabled: true
+```
+
+On remote machines (e.g. meowplace) point `FILESHARE_URL` at the meowhome
+server so files land in the same shared directory.
 
 ## Settings
 
