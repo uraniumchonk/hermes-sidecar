@@ -21,7 +21,7 @@ import os
 import threading
 import time
 import uuid
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_DIR = os.path.expanduser('~/agent-sidepanel/uploads')
@@ -97,7 +97,7 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-class UploadServer(HTTPServer):
+class UploadServer(ThreadingHTTPServer):
     def __init__(self, addr, upload_dir, public_host, max_age_days):
         super().__init__(addr, Handler)
         self.dir = upload_dir          # Handler 用 self.server.dir 讀取
