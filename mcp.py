@@ -17,6 +17,7 @@ fileshare MCP Server - LAN 檔案分享上傳工具（純標準庫零依賴）
 import json
 import os
 import sys
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -75,12 +76,50 @@ TOOL_FUNCTIONS = {
 
 
 def main():
-    """MCP stdio 伺服器主迴圈。"""
+    """MCP stdio 伺服器主迴圈。
+
+    關鍵點（meowchat MCP 的教訓，2026-08-26）：
+    - Hermes MCP client 每 180 秒發 keepalive ping（30 秒超時），不回應就判定
+      server 死掉 → 重連 → 連續 5 次失敗後 park（工具全部消失）。ping 必須立即回應。
+    - tool call 丟獨立 thread 處理，主迴圈不被長上傳（最大 50MB）阻塞，
+      才能繼續讀 stdin 回應 ping。
+    - stdout 寫入加鎖，防多 thread 輸出交錯。
+    """
+
+    send_lock = threading.Lock()
 
     def send(msg: dict):
         encoded = json.dumps(msg).encode() + b"\n"
-        sys.stdout.buffer.write(encoded)
-        sys.stdout.buffer.flush()
+        with send_lock:
+            sys.stdout.buffer.write(encoded)
+            sys.stdout.buffer.flush()
+
+    def handle_tool_call(req_id, params):
+        tool_name = params.get("name", "")
+        arguments = params.get("arguments", {})
+
+        if tool_name in TOOL_FUNCTIONS:
+            try:
+                result = TOOL_FUNCTIONS[tool_name](**arguments)
+                send({"jsonrpc": "2.0", "id": req_id, "result": result})
+            except Exception as e:
+                send({
+                    "jsonrpc": "2.0",
+                    "id": req_id,
+                    "result": {
+                        "content": [{"type": "text", "text": f"錯誤: {str(e)}"}],
+                        "isError": True,
+                    },
+                })
+        else:
+            send({
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "result": {
+                    "content": [{"type": "text", "text": f"未知工具: {tool_name}"}],
+                    "isError": True,
+                },
+            })
 
     for line in sys.stdin:
         line = line.strip()
@@ -103,9 +142,13 @@ def main():
                 "result": {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {"tools": {}},
-                    "serverInfo": {"name": "fileshare", "version": "1.0.0"},
+                    "serverInfo": {"name": "fileshare", "version": "1.1.0"},
                 },
             })
+
+        elif method == "ping":
+            # keepalive：必須立即回應，否則 client 判定 server 死掉
+            send({"jsonrpc": "2.0", "id": req_id, "result": {}})
 
         elif method == "tools/list":
             send({
@@ -115,31 +158,12 @@ def main():
             })
 
         elif method == "tools/call":
-            tool_name = params.get("name", "")
-            arguments = params.get("arguments", {})
-
-            if tool_name in TOOL_FUNCTIONS:
-                try:
-                    result = TOOL_FUNCTIONS[tool_name](**arguments)
-                    send({"jsonrpc": "2.0", "id": req_id, "result": result})
-                except Exception as e:
-                    send({
-                        "jsonrpc": "2.0",
-                        "id": req_id,
-                        "result": {
-                            "content": [{"type": "text", "text": f"錯誤: {str(e)}"}],
-                            "isError": True,
-                        },
-                    })
-            else:
-                send({
-                    "jsonrpc": "2.0",
-                    "id": req_id,
-                    "result": {
-                        "content": [{"type": "text", "text": f"未知工具: {tool_name}"}],
-                        "isError": True,
-                    },
-                })
+            # 獨立 thread 執行，主迴圈保持讀 stdin（才能即時回應 ping）
+            threading.Thread(
+                target=handle_tool_call,
+                args=(req_id, params),
+                daemon=True,
+            ).start()
 
         else:
             # 忽略未知方法（包括 notifications/initialized）
