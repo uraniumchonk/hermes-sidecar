@@ -14,6 +14,7 @@ fileshare MCP Server - LAN 檔案分享上傳工具（純標準庫零依賴）
   圖片：![img](http://192.168.0.160:18778/files/<uuid>.jpg)
   檔案：[檔名](http://192.168.0.160:18778/files/<uuid>.txt)
 """
+import http.client
 import json
 import os
 import sys
@@ -23,7 +24,8 @@ import urllib.parse
 import urllib.request
 
 BASE_URL = os.environ.get('FILESHARE_URL', 'http://127.0.0.1:18778')
-MAX_SIZE = 50 * 1024 * 1024  # 與伺服器端一致
+MAX_SIZE = 1024 * 1024 * 1024  # 1GB（與伺服器端一致，2026-08-30 由 50MB 調高）
+UPLOAD_TIMEOUT = 600  # 秒；1GB 走 LAN 也要留足餘裕
 
 
 def share_file(path: str) -> dict:
@@ -35,18 +37,25 @@ def share_file(path: str) -> dict:
         return {"content": [{"type": "text", "text": f"檔案過大（{size} bytes，上限 {MAX_SIZE}）"}], "isError": True}
 
     name = os.path.basename(path)
-    with open(path, 'rb') as f:
-        data = f.read()
-    req = urllib.request.Request(
-        f"{BASE_URL}/upload?name={urllib.parse.quote(name)}",
-        data=data,
-        method="POST",
-    )
+    # 串流上傳（file-like body + 明確 Content-Length），不把整個檔案吃進記憶體
+    parsed = urllib.parse.urlparse(BASE_URL)
+    if not parsed.hostname:
+        return {"content": [{"type": "text", "text": f"FILESHARE_URL 設定無效: {BASE_URL}"}], "isError": True}
+    conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=UPLOAD_TIMEOUT)
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with open(path, 'rb') as f:
+            conn.request(
+                'POST',
+                f'/upload?name={urllib.parse.quote(name)}',
+                body=f,
+                headers={'Content-Length': str(size)},
+            )
+            resp = conn.getresponse()
             result = json.loads(resp.read())
-    except urllib.error.URLError as e:
+    except (OSError, ValueError) as e:
         return {"content": [{"type": "text", "text": f"上傳失敗: {e}（fileshare 服務是否運行？{BASE_URL}）"}], "isError": True}
+    finally:
+        conn.close()
 
     url = result.get("url", "")
     if not url:

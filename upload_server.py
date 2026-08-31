@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 DEFAULT_DIR = os.path.expanduser('~/agent-sidepanel/uploads')
-MAX_SIZE = 50 * 1024 * 1024  # 50MB
+MAX_SIZE = 1024 * 1024 * 1024  # 1GB（內網專用，2026-08-30 由 50MB 調高）
 DEFAULT_MAX_AGE_DAYS = 7
 LAN_PREFIX = '192.168.0.'  # 家庭 LAN 子網
 
@@ -83,13 +83,18 @@ class Handler(BaseHTTPRequestHandler):
         if length <= 0 or length > MAX_SIZE:
             self._send(413, '{"error": "size out of range"}')
             return
-        body = self.rfile.read(length)
         _, ext = os.path.splitext(os.path.basename(name))
         ext = ext.lower() if 0 < len(ext) <= 10 else ''
         fname = f'{uuid.uuid4().hex}{ext}'
         fp = os.path.join(self.server.dir, fname)
+        remaining = length
         with open(fp, 'wb') as f:
-            f.write(body)
+            while remaining > 0:
+                chunk = self.rfile.read(min(8 * 1024 * 1024, remaining))
+                if not chunk:
+                    break
+                f.write(chunk)
+                remaining -= len(chunk)
         url = f'http://{self.server.public_host}/files/{fname}'
         self._send(200, json.dumps({"path": fp, "url": url}))
 
