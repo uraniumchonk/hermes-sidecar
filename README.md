@@ -65,7 +65,7 @@ firewall to trusted sources only.
 4. The `+` button in the top-right corner starts a new chat; double-click it
    to reopen settings
 
-### upload_server (attachment receiver + LAN file share)
+### upload_server (attachment receiver + LAN file share + R2 public share)
 
 ```bash
 python3 upload_server.py --port 18778 --dir ~/agent-sidepanel/uploads
@@ -79,17 +79,20 @@ Options:
 | `--dir` | `~/agent-sidepanel/uploads` | storage directory |
 | `--public-host` | `192.168.0.160` | host used in returned URLs |
 | `--max-age-days` | `7` | auto-delete files older than N days (0 = never) |
+| `--selftest` | — | run SigV4 test vectors and exit (no R2 creds needed) |
 
 Files are stored with a **uuid filename** (collision-free, no management
 needed — just `cp` over the directory or re-upload freely). A background
-thread prunes files older than `--max-age-days` every hour.
+thread prunes files older than `--max-age-days` every hour (and the matching
+R2 object, if public upload is enabled).
 
 Endpoints:
 
 ```
-POST /upload?name=<filename>   body = raw bytes
-     → {"path": "/abs/path", "url": "http://192.168.0.160:18778/files/<uuid>.ext"}
-GET  /health                  → {"ok": true}
+POST /upload?name=<filename>[&public=1]   body = raw bytes
+     → {"path": "/abs/path", "url": "http://192.168.0.160:18778/files/<uuid>.ext"
+        [, "public_url": "https://<acct>.r2.cloudflarestorage.com/<bucket>/<uuid>.ext?X-Amz-..."]}
+GET  /health                  → {"ok": true, "r2": <bool>}
 GET  /files/<name>            → file bytes with correct Content-Type
 ```
 
@@ -101,10 +104,36 @@ the proper `Content-Type`, so images render directly in markdown:
 [notes](http://192.168.0.160:18778/files/<uuid>.txt)
 ```
 
+#### R2 public share (optional)
+
+Add `&public=1` to `POST /upload` to also stream the file to a Cloudflare R2
+bucket and get back a `public_url` — a presigned GET link valid for up to 7
+days (SigV4 max) that works from any network, not just the LAN. R2 egress is
+free, so sharing large files is cheap.
+
+Enable it by providing R2 credentials via environment variables (the systemd
+unit loads `r2.env`):
+
+```bash
+# r2.env  (chmod 600)
+R2_ACCOUNT_ID=<your account id>
+R2_BUCKET=<bucket name>
+R2_ACCESS_KEY=<R2 API token access key>
+R2_SECRET_KEY=<R2 API token secret key>
+R2_URL_EXPIRY=604800   # presigned URL lifetime in seconds (max 604800 = 7d)
+```
+
+If any of the four required vars is missing, `public` upload is disabled and
+`GET /health` reports `"r2": false` — LAN sharing is unaffected. The SigV4
+implementation is pure stdlib (region=`auto`, service=`s3`); verify it with
+`python3 upload_server.py --selftest`.
+
 ### fileshare MCP (mcp.py)
 
-Single tool `share_file(path)` — upload a local file, get back the LAN URL.
-Stdio transport, pure stdlib, zero dependencies.
+Single tool `share_file(path, public=False)` — upload a local file, get back
+a URL. `public=False` returns the LAN URL; `public=True` returns the R2
+public URL (requires R2 to be configured on the server). Stdio transport,
+pure stdlib, zero dependencies.
 
 ```yaml
 # ~/.hermes/profiles/<p>/config.yaml

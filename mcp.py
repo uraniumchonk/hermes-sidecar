@@ -1,18 +1,21 @@
 #!/usr/bin/env python3
 """
-fileshare MCP Server - LAN 檔案分享上傳工具（純標準庫零依賴）
+fileshare MCP Server - LAN 檔案分享 + R2 公網分享上傳工具（純標準庫零依賴）
 透過 stdio 傳輸，可直接整合到 Hermes MCP 框架
 
 只有一個工具：
-  share_file(path)  上傳本機檔案到 fileshare 服務（自動換成 uuid 檔名），回傳 LAN URL
+  share_file(path, public=False)
+    上傳本機檔案到 fileshare 服務（自動換成 uuid 檔名）
+    public=False：回傳 LAN URL（僅家庭網路可存取）
+    public=True ：回傳 R2 公網 URL（presigned，預設 7 天有效，任何網路可存取）
 
 部署：
   meowhome（服務本機）：  python3 mcp.py
   meowplace（遠端上傳）： FILESHARE_URL=http://192.168.0.160:18778 python3 mcp.py
 
 回傳的 URL 可直接包進 markdown：
-  圖片：![img](http://192.168.0.160:18778/files/<uuid>.jpg)
-  檔案：[檔名](http://192.168.0.160:18778/files/<uuid>.txt)
+  圖片：![img](<url>)
+  檔案：[檔名](<url>)
 """
 import http.client
 import json
@@ -28,50 +31,73 @@ MAX_SIZE = 1024 * 1024 * 1024  # 1GB（與伺服器端一致，2026-08-30 由 50
 UPLOAD_TIMEOUT = 600  # 秒；1GB 走 LAN 也要留足餘裕
 
 
-def share_file(path: str) -> dict:
-    """上傳本機檔案到 LAN 檔案分享，回傳 LAN URL。"""
+def _err(msg: str) -> dict:
+    return {"content": [{"type": "text", "text": msg}], "isError": True}
+
+
+def share_file(path: str, public: bool = False) -> dict:
+    """上傳本機檔案到 fileshare 服務，回傳 URL。
+
+    public=False：回傳 LAN URL（僅家庭網路可存取）
+    public=True ：回傳 R2 公網 URL（presigned，預設 7 天有效，任何網路可存取）
+    """
     if not os.path.isfile(path):
-        return {"content": [{"type": "text", "text": f"檔案不存在: {path}"}], "isError": True}
+        return _err(f"檔案不存在: {path}")
     size = os.path.getsize(path)
     if size > MAX_SIZE:
-        return {"content": [{"type": "text", "text": f"檔案過大（{size} bytes，上限 {MAX_SIZE}）"}], "isError": True}
+        return _err(f"檔案過大（{size} bytes，上限 {MAX_SIZE}）")
 
     name = os.path.basename(path)
     # 串流上傳（file-like body + 明確 Content-Length），不把整個檔案吃進記憶體
     parsed = urllib.parse.urlparse(BASE_URL)
     if not parsed.hostname:
-        return {"content": [{"type": "text", "text": f"FILESHARE_URL 設定無效: {BASE_URL}"}], "isError": True}
+        return _err(f"FILESHARE_URL 設定無效: {BASE_URL}")
+    query = f'/upload?name={urllib.parse.quote(name)}'
+    if public:
+        query += '&public=1'
     conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=UPLOAD_TIMEOUT)
     try:
         with open(path, 'rb') as f:
             conn.request(
                 'POST',
-                f'/upload?name={urllib.parse.quote(name)}',
+                query,
                 body=f,
                 headers={'Content-Length': str(size)},
             )
             resp = conn.getresponse()
             result = json.loads(resp.read())
     except (OSError, ValueError) as e:
-        return {"content": [{"type": "text", "text": f"上傳失敗: {e}（fileshare 服務是否運行？{BASE_URL}）"}], "isError": True}
+        return _err(f"上傳失敗: {e}（fileshare 服務是否運行？{BASE_URL}）")
     finally:
         conn.close()
 
-    url = result.get("url", "")
-    if not url:
-        return {"content": [{"type": "text", "text": f"伺服器回應缺少 url: {result}"}], "isError": True}
-    return {"content": [{"type": "text", "text": url}]}
+    if public:
+        if "error" in result:
+            return _err(f"公網上傳不可用: {result['error']}")
+        url = result.get("public_url", "")
+        if not url:
+            return _err(f"伺服器回應缺少 public_url: {result}")
+        return {"content": [{"type": "text", "text": url}]}
+    else:
+        url = result.get("url", "")
+        if not url:
+            return _err(f"伺服器回應缺少 url: {result}")
+        return {"content": [{"type": "text", "text": url}]}
 
 
 # MCP 工具定義
 TOOLS = [
     {
         "name": "share_file",
-        "description": "上傳本機檔案到 LAN 檔案分享，回傳 LAN URL。傳入檔案的絕對路徑；回傳的 URL 可直接包進 markdown（圖片用 ![img](url)、文字/程式碼用 [檔名](url)）。檔案自動換成 uuid 檔名，7 天後自動清理。",
+        "description": "上傳本機檔案到 fileshare 服務，回傳可分享的 URL。傳入檔案的絕對路徑；回傳的 URL 可直接包進 markdown（圖片用 ![img](url)、文字/程式碼用 [檔名](url)）。檔案自動換成 uuid 檔名，7 天後自動清理。public=False 回傳 LAN URL（僅家庭網路）；public=True 回傳 R2 公網 URL（任何網路可存取，預設 7 天有效）。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "要上傳的本機檔案絕對路徑"},
+                "public": {
+                    "type": "boolean",
+                    "description": "是否回傳公網 URL（R2 presigned，預設 false 回傳 LAN URL）",
+                },
             },
             "required": ["path"],
         },
