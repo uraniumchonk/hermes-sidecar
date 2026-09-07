@@ -89,9 +89,12 @@ R2 object, if public upload is enabled).
 Endpoints:
 
 ```
+GET  /                        → built-in upload frontend (drag & drop, progress,
+                                link copy, recent uploads; static HTML, no deps)
 POST /upload?name=<filename>[&public=1]   body = raw bytes
      → {"path": "/abs/path", "url": "http://192.168.0.160:18778/files/<uuid>.ext"
         [, "public_url": "https://<acct>.r2.cloudflarestorage.com/<bucket>/<uuid>.ext?X-Amz-..."]}
+GET  /files                   → JSON list of uploads (name/orig/size/mtime, newest first)
 GET  /health                  → {"ok": true, "r2": <bool>}
 GET  /files/<name>            → file bytes with correct Content-Type
 ```
