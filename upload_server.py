@@ -23,6 +23,7 @@ R2 公網分享（選配，設定齊全才啟用）：
        → {"path": "/abs/path", "url": "http://<host>/files/<uuid>.ext"[, "public_url": "..."]}
   GET  /health                    → {"ok": true, "r2": <bool>}
   GET  /files/<name>              讀回已上傳檔案（LAN 存取）
+       圖片維持內嵌顯示（markdown 用途）；其餘類型一律強制下載並還原原始檔名
 """
 import argparse
 import hashlib
@@ -275,12 +276,59 @@ def lan_allowed(client_ip: str) -> bool:
     return client_ip.startswith(LAN_PREFIX) or client_ip in ('127.0.0.1', '::1')
 
 
+def _safe_filename(name: str):
+    """把原始檔名整理成可安全放入 Content-Disposition 的值（防 header 注入/路徑穿越）。"""
+    name = os.path.basename(name)
+    name = name.replace('"', '').replace('\r', '').replace('\n', '').strip()
+    return name or None
+
+
+def _read_orig_name(fp: str):
+    """讀取 sidecar（<fp>.orig）記錄的原始檔名；不存在或讀失敗回傳 None。"""
+    try:
+        with open(fp + '.orig', 'r', encoding='utf-8') as mf:
+            return _safe_filename(mf.read())
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _content_disposition(name: str):
+    """產生對非 ASCII 檔名安全的 Content-Disposition 值（RFC 5987）。
+
+    send_header 以 latin-1 編碼 header 值，中文檔名會直接 UnicodeEncodeError 崩潰。
+    解法：純 ASCII 檔名用 filename=；非 ASCII 檔名用 filename*=UTF-8''<percent-encoded>
+    （現代瀏覽器讀 filename* 還原正確檔名），並附純 ASCII 的 filename= 給舊瀏覽器。
+    """
+    if not name:
+        return None
+    if name.isascii():
+        return f'attachment; filename="{name}"'
+    base, ext = os.path.splitext(name)
+    fallback = ''.join(c if c.isascii() else '_' for c in base).strip('_') or 'file'
+    fallback += ''.join(c if c.isascii() else '_' for c in ext)
+    encoded = quote(name, safe='')
+    return f"attachment; filename=\"{fallback}\"; filename*=UTF-8''{encoded}"
+
+
+def _fix_maybe_mojibake(s: str) -> str:
+    """客戶端若把 raw UTF-8 字節直接塞進 URL（未 percent-encode），
+    http.server 會以 latin-1 解碼 request line，產生亂碼（如 筆記→ç­è¨）。
+    此處嘗試還原：若 s 是 latin-1 解碼 UTF-8 的結果，重新 encode→decode 取回原文；
+    否則（正常 percent-encode 解出的字串、或純 ASCII）原樣回傳。"""
+    try:
+        return s.encode('latin-1').decode('utf-8')
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return s
+
+
 class Handler(BaseHTTPRequestHandler):
-    def _send(self, code, body, ctype='application/json'):
+    def _send(self, code, body, ctype='application/json', disposition=None):
         data = body.encode('utf-8') if isinstance(body, str) else body
         self.send_response(code)
         self.send_header('Content-Type', ctype)
         self.send_header('Content-Length', str(len(data)))
+        if disposition:
+            self.send_header('Content-Disposition', disposition)
         self.end_headers()
         self.wfile.write(data)
 
@@ -293,11 +341,20 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({'ok': True, 'r2': r2_enabled()}))
         elif path.startswith('/files/'):
             name = os.path.basename(path)  # 防路徑穿越
+            if name.endswith('.orig'):
+                self._send(404, 'not found')  # sidecar 不對外開放
+                return
             fp = os.path.join(self.server.dir, name)
             if os.path.isfile(fp):
                 ctype = mimetypes.guess_type(name)[0] or 'application/octet-stream'
+                disposition = None
+                if not ctype.startswith('image/'):
+                    # 圖片維持內嵌顯示（markdown 用途）；其餘類型一律強制下載並還原原始檔名
+                    # （文字類瀏覽器會內嵌顯示，octet-stream/pdf 等也一併下載並帶正確檔名）
+                    disp_name = _read_orig_name(fp) or name
+                    disposition = _content_disposition(disp_name)
                 with open(fp, 'rb') as f:
-                    self._send(200, f.read(), ctype)
+                    self._send(200, f.read(), ctype, disposition)
             else:
                 self._send(404, 'not found')
         else:
@@ -316,6 +373,7 @@ class Handler(BaseHTTPRequestHandler):
         if not name:
             self._send(400, '{"error": "missing ?name="}')
             return
+        name = _fix_maybe_mojibake(name)
         want_public = (qs.get('public') or [''])[0].strip().lower() in ('1', 'true', 'yes')
         try:
             length = int(self.headers.get('Content-Length', 0))
@@ -344,6 +402,14 @@ class Handler(BaseHTTPRequestHandler):
                 f.write(chunk)
                 sha.update(chunk)
                 remaining -= len(chunk)
+        # 記錄原始檔名到 sidecar，供下載時還原（避免 uuid 檔名）
+        orig = _safe_filename(name)
+        if orig and orig != fname:
+            try:
+                with open(fp + '.orig', 'w', encoding='utf-8') as mf:
+                    mf.write(orig)
+            except OSError:
+                pass  # sidecar 寫失敗不影響上傳
         url = f'http://{self.server.public_host}/files/{fname}'
         result = {'path': fp, 'url': url}
         if want_public:
@@ -376,16 +442,22 @@ def cleanup_loop(server: UploadServer, interval: int = 3600):
         try:
             for name in os.listdir(server.dir):
                 fp = os.path.join(server.dir, name)
-                if os.path.isfile(fp) and os.path.getmtime(fp) < cutoff:
-                    os.remove(fp)
-                    print(f'cleanup: removed {name} (older than {server.max_age_days} days)',
-                          flush=True)
-                    if r2_enabled():
-                        try:
-                            status, err = r2_delete_object(name)
-                            print(f'cleanup: r2 delete {name} -> HTTP {status}', flush=True)
-                        except Exception as e:
-                            print(f'cleanup: r2 delete {name} failed: {e}', flush=True)
+                if not os.path.isfile(fp) or os.path.getmtime(fp) >= cutoff:
+                    continue
+                os.remove(fp)
+                print(f'cleanup: removed {name} (older than {server.max_age_days} days)',
+                      flush=True)
+                if name.endswith('.orig'):
+                    continue  # sidecar 本身，無對應 R2 物件
+                if r2_enabled():
+                    try:
+                        status, err = r2_delete_object(name)
+                        print(f'cleanup: r2 delete {name} -> HTTP {status}', flush=True)
+                    except Exception as e:
+                        print(f'cleanup: r2 delete {name} failed: {e}', flush=True)
+                sidecar = fp + '.orig'
+                if os.path.isfile(sidecar):
+                    os.remove(sidecar)
         except OSError as e:
             print(f'cleanup error: {e}', flush=True)
 
