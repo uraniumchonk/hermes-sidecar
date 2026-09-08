@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 """
-fileshare MCP Server - LAN 檔案分享 + R2 公網分享上傳工具（純標準庫零依賴）
+fileshare MCP Server - LAN 檔案分享 + meow-share 公網分享上傳工具（純標準庫零依賴）
 透過 stdio 傳輸，可直接整合到 Hermes MCP 框架
 
 只有一個工具：
   share_file(path, public=False)
     上傳本機檔案到 fileshare 服務（自動換成 uuid 檔名）
     public=False：回傳 LAN URL（僅家庭網路可存取）
-    public=True ：回傳 R2 公網 URL（presigned，預設 7 天有效，任何網路可存取）
+    public=True ：發布到 meow-share（R2 public bucket），回傳短公網 URL
+                  （share.thomas2018yulab.uk/<token>，7 天過期，任何網路可存取）
 
 部署：
   meowhome（服務本機）：  python3 mcp.py
   meowplace（遠端上傳）： FILESHARE_URL=http://192.168.0.160:18778 python3 mcp.py
+  （public=True 只在 meowhome 可用，需要本機 share_cli.py）
 
 回傳的 URL 可直接包進 markdown：
   圖片：![img](<url>)
@@ -20,6 +22,7 @@ fileshare MCP Server - LAN 檔案分享 + R2 公網分享上傳工具（純標�
 import http.client
 import json
 import os
+import subprocess
 import sys
 import threading
 import urllib.error
@@ -29,6 +32,7 @@ import urllib.request
 BASE_URL = os.environ.get('FILESHARE_URL', 'http://127.0.0.1:18778')
 MAX_SIZE = 1024 * 1024 * 1024  # 1GB（與伺服器端一致，2026-08-30 由 50MB 調高）
 UPLOAD_TIMEOUT = 600  # 秒；1GB 走 LAN 也要留足餘裕
+SHARE_CLI = os.path.expanduser('~/hermes-sidecar/share_cli.py')
 
 
 def _err(msg: str) -> dict:
@@ -39,7 +43,8 @@ def share_file(path: str, public: bool = False) -> dict:
     """上傳本機檔案到 fileshare 服務，回傳 URL。
 
     public=False：回傳 LAN URL（僅家庭網路可存取）
-    public=True ：回傳 R2 公網 URL（presigned，預設 7 天有效，任何網路可存取）
+    public=True ：發布到 meow-share（R2 public bucket），回傳短公網 URL
+                  （share.thomas2018yulab.uk/<token>，7 天過期，任何網路可存取）
     """
     if not os.path.isfile(path):
         return _err(f"檔案不存在: {path}")
@@ -47,14 +52,32 @@ def share_file(path: str, public: bool = False) -> dict:
     if size > MAX_SIZE:
         return _err(f"檔案過大（{size} bytes，上限 {MAX_SIZE}）")
 
+    if public:
+        # meow-share：R2 public bucket + custom domain（短 URL、定時過期）
+        if not os.path.isfile(SHARE_CLI):
+            return _err(f"meow-share 不可用：{SHARE_CLI} 不存在（public=True 只在 meowhome 可用）")
+        try:
+            out = subprocess.run(
+                [sys.executable, SHARE_CLI, 'publish', path, '--ttl', '7d'],
+                capture_output=True, text=True, timeout=UPLOAD_TIMEOUT)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return _err(f"meow-share publish 失敗: {e}")
+        if out.returncode != 0:
+            return _err(f"meow-share publish 失敗: {out.stderr.strip()[:300]}")
+        url = ''
+        for line in out.stdout.splitlines():
+            if line.startswith('url:'):
+                url = line.split('url:', 1)[1].strip()
+        if not url:
+            return _err(f"meow-share 回應缺少 url: {out.stdout[:300]}")
+        return {"content": [{"type": "text", "text": url}]}
+
     name = os.path.basename(path)
     # 串流上傳（file-like body + 明確 Content-Length），不把整個檔案吃進記憶體
     parsed = urllib.parse.urlparse(BASE_URL)
     if not parsed.hostname:
         return _err(f"FILESHARE_URL 設定無效: {BASE_URL}")
     query = f'/upload?name={urllib.parse.quote(name)}'
-    if public:
-        query += '&public=1'
     conn = http.client.HTTPConnection(parsed.hostname, parsed.port or 80, timeout=UPLOAD_TIMEOUT)
     try:
         with open(path, 'rb') as f:
@@ -71,32 +94,24 @@ def share_file(path: str, public: bool = False) -> dict:
     finally:
         conn.close()
 
-    if public:
-        if "error" in result:
-            return _err(f"公網上傳不可用: {result['error']}")
-        url = result.get("public_url", "")
-        if not url:
-            return _err(f"伺服器回應缺少 public_url: {result}")
-        return {"content": [{"type": "text", "text": url}]}
-    else:
-        url = result.get("url", "")
-        if not url:
-            return _err(f"伺服器回應缺少 url: {result}")
-        return {"content": [{"type": "text", "text": url}]}
+    url = result.get("url", "")
+    if not url:
+        return _err(f"伺服器回應缺少 url: {result}")
+    return {"content": [{"type": "text", "text": url}]}
 
 
 # MCP 工具定義
 TOOLS = [
     {
         "name": "share_file",
-        "description": "上傳本機檔案到 fileshare 服務，回傳可分享的 URL。傳入檔案的絕對路徑；回傳的 URL 可直接包進 markdown（圖片用 ![img](url)、文字/程式碼用 [檔名](url)）。檔案自動換成 uuid 檔名，7 天後自動清理。public=False 回傳 LAN URL（僅家庭網路）；public=True 回傳 R2 公網 URL（任何網路可存取，預設 7 天有效）。",
+        "description": "上傳本機檔案到 fileshare 服務，回傳可分享的 URL。傳入檔案的絕對路徑；回傳的 URL 可直接包進 markdown（圖片用 ![img](url)、文字/程式碼用 [檔名](url)）。檔案自動換成 uuid 檔名，7 天後自動清理。public=False 回傳 LAN URL（僅家庭網路）；public=True 發布到 meow-share 回傳短公網 URL（share.thomas2018yulab.uk/<token>，7 天過期，任何網路可存取）。",
         "inputSchema": {
             "type": "object",
             "properties": {
                 "path": {"type": "string", "description": "要上傳的本機檔案絕對路徑"},
                 "public": {
                     "type": "boolean",
-                    "description": "是否回傳公網 URL（R2 presigned，預設 false 回傳 LAN URL）",
+                    "description": "是否回傳公網 URL（meow-share 短連結，預設 false 回傳 LAN URL）",
                 },
             },
             "required": ["path"],
