@@ -18,6 +18,16 @@ R2 公網分享（選配，設定齊全才啟用）：
   - 憑證從環境變數讀取（systemd EnvironmentFile）：
     R2_ACCOUNT_ID / R2_BUCKET / R2_ACCESS_KEY / R2_SECRET_KEY / R2_URL_EXPIRY
 
+公網唯讀存取（Cloudflare tunnel，選配，設定齊全才啟用）：
+  - 設定 FILESHARE_PUBLIC_HOST=<公網 hostname>（如 files.thomas2018yulab.uk）後，
+    請求的 Host header 等於該值時進入「公網唯讀模式」：
+    只放行 GET /files/<name>（讀檔），一律封鎖 /（上傳介面）、/files（清單）、
+    /upload（上傳）——避免公開洩漏檔案清單或被人從外網塞檔。
+  - 上傳回應額外回傳 tunnel_url（https://<PUBLIC_HOST>/files/<uuid>.ext），
+    乾淨短連結，只要檔案在本地（7 天內）就有效，不需 public=1、不碰 R2。
+  - 與 R2 的差異：tunnel 連結走自家 tunnel（需 meowhome 開著），R2 是離線備份
+    （meowhome 關掉仍可存取）。兩者可並存，前端會同時顯示。
+
 端點：
   GET  /                          內建上傳前端（拖放/進度/連結複製，純靜態 HTML 無外部依賴）
   POST /upload?name=<filename>[&public=1]   body = raw bytes
@@ -60,6 +70,14 @@ R2_URL_EXPIRY = max(1, min(R2_URL_EXPIRY, 7 * 86400))  # SigV4 presign 上限 7 
 R2_REGION = 'auto'  # R2 固定
 R2_SERVICE = 's3'
 R2_PUT_TIMEOUT = 600  # 秒；1GB 走公網留足餘裕
+
+# ── 公網（Cloudflare tunnel）唯讀存取 ─────────────────────────────────
+# 透過 tunnel 暴露的公網 hostname（如 files.thomas2018yulab.uk）。當請求的
+# Host header 等於此值時進入「公網唯讀模式」：只放行 GET /files/<name>（讀檔），
+# 一律封鎖 /（上傳介面）、/files（檔案清單）、/upload（上傳）——避免公開洩漏
+# 檔案清單或被人從外網塞檔。留空 = 不啟用（純 LAN 行為，與舊版完全一致）。
+# 設定在 r2.env：FILESHARE_PUBLIC_HOST=files.thomas2018yulab.uk
+PUBLIC_HOST = os.environ.get('FILESHARE_PUBLIC_HOST', '').strip().lower()
 
 
 def r2_enabled() -> bool:
@@ -375,6 +393,7 @@ a.open{color:var(--accent);text-decoration:none;font-size:11px;margin-left:6px}
 const $ = id => document.getElementById(id);
 const drop = $('drop'), fileInput = $('file'), queueEl = $('queue'),
       pubBox = $('pub'), optsEl = $('opts');
+let PUBLIC_HOST = '';  // 由 /health 填入（公網 tunnel hostname，空 = 未啟用）
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmtSize = n => n < 1024 ? n + ' B'
   : n < 1048576 ? (n/1024).toFixed(1) + ' KB'
@@ -385,9 +404,11 @@ const fmtTime = t => new Date(t*1000).toLocaleString('zh-TW',
 
 fetch('/health').then(r => r.json()).then(h => {
   const on = !!h.r2;
+  PUBLIC_HOST = h.public_host || '';
   $('r2dot').classList.toggle('on', on);
   $('r2txt').textContent = on ? 'R2 已就緒' : 'R2 未啟用（僅 LAN）';
   if (!on) { pubBox.disabled = true; optsEl.classList.add('off'); }
+  loadRecent();  // 拿到 public_host 後重繪清單（補上「外網」按鈕）
 }).catch(() => { $('r2txt').textContent = '服務連線失敗'; });
 
 function copyText(text, btn) {
@@ -417,11 +438,13 @@ async function loadRecent() {
     $('recentEmpty').style.display = list.length ? 'none' : 'block';
     for (const it of list.slice(0, 30)) {
       const url = '/files/' + encodeURIComponent(it.name);
+      const pubUrl = PUBLIC_HOST ? 'https://' + PUBLIC_HOST + '/files/' + encodeURIComponent(it.name) : '';
       const tr = document.createElement('tr');
       tr.innerHTML =
         '<td class="mono" title="' + esc(it.name) + '">' + esc(it.orig) + '</td>' +
         '<td>' + fmtSize(it.size) + '</td><td>' + fmtTime(it.mtime) + '</td>' +
         '<td class="ops"><button data-copy="' + esc(url) + '">複製</button>' +
+        (pubUrl ? '<button data-copy="' + esc(pubUrl) + '">外網</button>' : '') +
         '<a class="open" href="' + esc(url) + '">開啟</a></td>';
       tb.appendChild(tr);
     }
@@ -474,7 +497,8 @@ function upload(file) {
       try { data = JSON.parse(xhr.responseText); } catch (e) {}
       const rows = [];
       if (data.url) rows.push(['LAN 連結', data.url]);
-      if (data.public_url) rows.push(['公網連結', data.public_url]);
+      if (data.tunnel_url) rows.push(['公網連結', data.tunnel_url]);
+      if (data.public_url) rows.push(['R2 備份連結', data.public_url]);
       result.innerHTML = rows.map(r =>
         '<div class="lbl">' + r[0] + '</div><div class="urlbox">' +
         '<input readonly value="' + esc(r[1]) + '"><button data-copy="' + esc(r[1]) + '">複製</button>' +
@@ -564,6 +588,37 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def _host_of(self) -> str:
+        """請求的 Host header（去掉 port、轉小寫）。"""
+        return (self.headers.get('Host') or '').split(':')[0].strip().lower()
+
+    def _is_public(self) -> bool:
+        """是否來自公網 tunnel（Host header 等於 FILESHARE_PUBLIC_HOST）。
+
+        cloudflared 是同機轉發，來源 IP 是 127.0.0.1（會通過 lan_allowed），
+        所以必須靠 Host header 區分公網請求，才能對公網套用唯讀限制。
+        """
+        return bool(PUBLIC_HOST) and self._host_of() == PUBLIC_HOST
+
+    def _serve_file(self, name: str):
+        """伺服單一檔案（LAN 與公網共用）。name 已 basename（防路徑穿越）。"""
+        if name.endswith('.orig'):
+            self._send(404, 'not found')  # sidecar 不對外開放
+            return
+        fp = os.path.join(self.server.dir, name)
+        if os.path.isfile(fp):
+            ctype = mimetypes.guess_type(name)[0] or 'application/octet-stream'
+            disposition = None
+            if not ctype.startswith('image/'):
+                # 圖片維持內嵌顯示（markdown 用途）；其餘類型一律強制下載並還原原始檔名
+                # （文字類瀏覽器會內嵌顯示，octet-stream/pdf 等也一併下載並帶正確檔名）
+                disp_name = _read_orig_name(fp) or name
+                disposition = _content_disposition(disp_name)
+            with open(fp, 'rb') as f:
+                self._send(200, f.read(), ctype, disposition)
+        else:
+            self._send(404, 'not found')
+
     def _list_files(self):
         """已上傳檔案清單（排除 .orig sidecar），依時間新到舊，上限 100 筆。"""
         items = []
@@ -591,38 +646,34 @@ class Handler(BaseHTTPRequestHandler):
         return items[:100]
 
     def do_GET(self):
+        path = urlparse(self.path).path
+        if self._is_public():
+            # 公網唯讀：只放行 GET /files/<name>；/（上傳介面）、/files（清單）、
+            # /health 一律 404，避免公開洩漏檔案清單或介面。
+            if path.startswith('/files/'):
+                self._serve_file(os.path.basename(path))
+            else:
+                self._send(404, 'not found')
+            return
         if not lan_allowed(self.client_address[0]):
             self._send(403, '{"error": "forbidden: source IP not allowed"}')
             return
-        path = urlparse(self.path).path
         if path == '/health':
-            self._send(200, json.dumps({'ok': True, 'r2': r2_enabled()}))
+            self._send(200, json.dumps({'ok': True, 'r2': r2_enabled(),
+                                        'public_host': PUBLIC_HOST}))
         elif path == '/':
             self._send(200, FRONTEND_HTML, 'text/html; charset=utf-8')
         elif path == '/files':
             self._send(200, json.dumps(self._list_files(), ensure_ascii=False))
         elif path.startswith('/files/'):
-            name = os.path.basename(path)  # 防路徑穿越
-            if name.endswith('.orig'):
-                self._send(404, 'not found')  # sidecar 不對外開放
-                return
-            fp = os.path.join(self.server.dir, name)
-            if os.path.isfile(fp):
-                ctype = mimetypes.guess_type(name)[0] or 'application/octet-stream'
-                disposition = None
-                if not ctype.startswith('image/'):
-                    # 圖片維持內嵌顯示（markdown 用途）；其餘類型一律強制下載並還原原始檔名
-                    # （文字類瀏覽器會內嵌顯示，octet-stream/pdf 等也一併下載並帶正確檔名）
-                    disp_name = _read_orig_name(fp) or name
-                    disposition = _content_disposition(disp_name)
-                with open(fp, 'rb') as f:
-                    self._send(200, f.read(), ctype, disposition)
-            else:
-                self._send(404, 'not found')
+            self._serve_file(os.path.basename(path))
         else:
             self._send(404, 'not found')
 
     def do_POST(self):
+        if self._is_public():
+            self._send(404, 'not found')  # 公網不開放上傳（防外網塞檔/塞爆磁碟）
+            return
         if not lan_allowed(self.client_address[0]):
             self._send(403, '{"error": "forbidden: source IP not allowed"}')
             return
@@ -674,6 +725,10 @@ class Handler(BaseHTTPRequestHandler):
                 pass  # sidecar 寫失敗不影響上傳
         url = f'http://{self.server.public_host}/files/{fname}'
         result = {'path': fp, 'url': url}
+        if PUBLIC_HOST:
+            # 公網唯讀連結（走 Cloudflare tunnel，乾淨短連結）。
+            # 只要檔案還在本地（7 天內）就有效，不需要 public=1、不碰 R2。
+            result['tunnel_url'] = f'https://{PUBLIC_HOST}/files/{fname}'
         if want_public:
             status, err = r2_put_object(fname, fp, sha.hexdigest(), length)
             if status != 200:

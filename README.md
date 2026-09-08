@@ -131,6 +131,46 @@ If any of the four required vars is missing, `public` upload is disabled and
 implementation is pure stdlib (region=`auto`, service=`s3`); verify it with
 `python3 upload_server.py --selftest`.
 
+#### Tunnel public share (clean URL, optional)
+
+A more elegant public link than the R2 presigned URL: expose the service
+through a Cloudflare Tunnel on a subdomain (e.g. `files.thomas2018yulab.uk`)
+and get back a short, clean URL like
+`https://files.thomas2018yulab.uk/files/<uuid>.ext` — no `X-Amz-*` signature
+noise.
+
+Enable it by setting `FILESHARE_PUBLIC_HOST` in `r2.env`:
+
+```bash
+FILESHARE_PUBLIC_HOST=files.thomas2018yulab.uk
+```
+
+Then:
+
+1. Add a tunnel ingress for the hostname (in the cloudflared config, before
+   the `http_status:404` catch-all):
+   ```yaml
+   - hostname: files.thomas2018yulab.uk
+     service: http://localhost:18778
+     originRequest:
+       httpHostHeader: files.thomas2018yulab.uk   # 讓服務端偵測到公網 host
+   ```
+2. Add a proxied CNAME DNS record: `files` → `<tunnel-id>.cfargotunnel.com`.
+3. Restart the upload service and cloudflared.
+
+**Security:** when the request `Host` header equals `FILESHARE_PUBLIC_HOST`,
+the service enters *public read-only mode* — only `GET /files/<name>` is
+served; `/` (upload UI), `/files` (listing) and `POST /upload` all return 404.
+This prevents leaking the file list or letting outsiders upload. The uuid
+filename is the access secret (128-bit), same trust model as the R2 presigned
+link. `GET /health` also reports `public_host` so the frontend can build the
+clean URL.
+
+Difference from R2: the tunnel link works while the host machine is up; R2
+is an offline backup (works even if the machine is off). Both can coexist —
+the upload response carries `tunnel_url` (clean) and `public_url` (R2) and the
+frontend shows both.
+
 ### fileshare MCP (mcp.py)
 
 Single tool `share_file(path, public=False)` — upload a local file, get back
