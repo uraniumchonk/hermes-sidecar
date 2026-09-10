@@ -13,13 +13,17 @@ LAN 檔案分享：
     改走 meow-share：share_cli.py + R2 public bucket share.thomas2018yulab.uk）
 
 端點：
-  GET  /                          內建上傳前端（拖放/進度/連結複製，純靜態 HTML 無外部依賴）
+  GET  /                          內建前端（清單/搜尋/上傳/預覽/編輯，純靜態 HTML 零外部依賴）
+  GET  /view/<name>               檔案檢視器（SPA 路由，回同一前端頁）
+  GET  /edit/<name>               文字編輯器（SPA 路由，回同一前端頁）
   POST /upload?name=<filename>    body = raw bytes
        → {"path": "/abs/path", "url": "http://<host>/files/<uuid>.ext"}
-  GET  /files                     已上傳檔案清單（JSON：name/orig/size/mtime，新到舊，上限 100 筆）
+  GET  /files?q=<搜尋>            已上傳檔案清單（JSON：name/orig/size/mtime，新到舊，上限 100 筆）
   GET  /health                    → {"ok": true}
   GET  /files/<name>              讀回已上傳檔案（LAN 存取）
-       圖片維持內嵌顯示（markdown 用途）；其餘類型一律強制下載並還原原始檔名
+       ?mode=inline   內嵌顯示（瀏覽器內建 PDF viewer、media 直接播放）
+       ?mode=download 一律強制下載
+       預設：圖片內嵌（markdown 用途）；其餘類型強制下載並還原原始檔名
 """
 import argparse
 import hashlib
@@ -44,7 +48,7 @@ CHUNK = 8 * 1024 * 1024
 # 功能：拖放/點選上傳、即時進度與速度、LAN/公網連結複製、最近上傳清單。
 # 上傳走 XHR（可取得 upload progress），檔案由瀏覽器串流送出，1GB 大檔不爆記憶體。
 
-FRONTEND_HTML = """<!DOCTYPE html>
+FRONTEND_HTML = r"""<!DOCTYPE html>
 <html lang="zh-Hant">
 <head>
 <meta charset="utf-8">
@@ -53,85 +57,209 @@ FRONTEND_HTML = """<!DOCTYPE html>
 <link rel="icon" href="data:,">
 <style>
 :root{
-  --bg:#09090b; --panel:#18181b; --panel2:#27272a; --border:#3f3f46;
-  --text:#e4e4e7; --dim:#a1a1aa; --accent:#34d399; --err:#f87171;
+  --bg-canvas:#09090b; --bg-surface:#131316; --bg-elevated:#1c1c21; --bg-raised:#26262c;
+  --text-primary:#ececee; --text-secondary:#a1a1aa; --text-muted:#63636b;
+  --border-subtle:rgba(255,255,255,.06); --border-default:rgba(255,255,255,.10);
+  --accent:#34d399; --accent-dim:rgba(52,211,153,.14);
+  --err:#f87171; --warn:#fbbf24;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --radius:8px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
+html{color-scheme:dark}
 body{
-  background:var(--bg);color:var(--text);min-height:100vh;padding:28px 16px;
+  background:var(--bg-canvas);color:var(--text-primary);min-height:100dvh;
   font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans TC","Microsoft JhengHei",sans-serif;
+  font-size:14px;line-height:1.6;
 }
-.wrap{max-width:640px;margin:0 auto}
-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:20px}
-h1{font-size:20px;font-weight:600;letter-spacing:.3px}
+a{color:var(--accent);text-decoration:none}
+button{
+  background:var(--bg-elevated);color:var(--text-primary);border:1px solid var(--border-default);
+  border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;font-family:inherit;
+  transition:background .15s ease-out,border-color .15s ease-out,transform .1s ease-out;
+}
+button:hover{background:var(--bg-raised)}
+button:active{transform:scale(.97)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent-dim);border-color:rgba(52,211,153,.35);color:var(--accent)}
+button.primary:hover{background:rgba(52,211,153,.22)}
+input,textarea{font-family:inherit;color:var(--text-primary)}
+.wrap{max-width:1000px;margin:0 auto;padding:24px 16px 60px}
+header{display:flex;justify-content:space-between;align-items:center;gap:16px;margin-bottom:18px;flex-wrap:wrap}
+h1{font-size:18px;font-weight:600;letter-spacing:.3px}
+.search{
+  flex:1;min-width:200px;max-width:360px;background:var(--bg-surface);
+  border:1px solid var(--border-default);border-radius:var(--radius);
+  padding:7px 12px;font-size:13px;outline:none;
+  transition:border-color .15s ease-out;
+}
+.search:focus{border-color:rgba(52,211,153,.4)}
+.search::placeholder{color:var(--text-muted)}
 .drop{
-  border:2px dashed var(--border);border-radius:12px;padding:40px 16px;text-align:center;
-  cursor:pointer;transition:border-color .15s,background .15s;background:var(--panel);
+  border:1.5px dashed var(--border-default);border-radius:var(--radius);padding:18px 16px;
+  text-align:center;cursor:pointer;background:var(--bg-surface);
+  transition:border-color .15s ease-out,background .15s ease-out;
 }
-.drop:hover,.drop.over{border-color:var(--accent);background:#1c1c21}
-.drop .big{font-size:15px;margin-bottom:8px}
-.drop .small{font-size:12px;color:var(--dim);line-height:1.7}
-.queue{margin-top:16px;display:flex;flex-direction:column;gap:10px}
-.item{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:12px 14px}
-.row1{display:flex;justify-content:space-between;gap:10px;font-size:13px;margin-bottom:8px}
+.drop:hover,.drop.over{border-color:var(--accent);background:var(--bg-elevated)}
+.drop .big{font-size:13px;margin-bottom:4px}
+.drop .small{font-size:11px;color:var(--text-muted)}
+.queue{margin-top:12px;display:flex;flex-direction:column;gap:8px}
+.item{background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:10px 12px}
+.row1{display:flex;justify-content:space-between;gap:10px;font-size:12px;margin-bottom:6px}
 .name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.meta{color:var(--dim);font-size:12px;flex:none}
-.bar{height:6px;background:var(--panel2);border-radius:3px;overflow:hidden}
-.bar>div{height:100%;width:0;background:var(--accent);transition:width .15s}
+.meta{color:var(--text-muted);font-size:11px;flex:none}
+.bar{height:5px;background:var(--bg-elevated);border-radius:3px;overflow:hidden}
+.bar>div{height:100%;width:0;background:var(--accent);transition:width .15s ease-out}
 .item.err .bar>div{background:var(--err)}
-.result{margin-top:10px;display:none}
+.result{margin-top:8px;display:none}
 .item.done .result{display:block}
-.lbl{font-size:11px;color:var(--dim);margin:8px 0 4px}
+.lbl{font-size:11px;color:var(--text-muted);margin:6px 0 4px}
 .urlbox{display:flex;gap:8px}
 .urlbox input{
-  flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);color:var(--text);
-  border-radius:6px;padding:6px 8px;font-size:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  flex:1;min-width:0;background:var(--bg-canvas);border:1px solid var(--border-default);
+  border-radius:6px;padding:5px 8px;font-size:11px;font-family:var(--mono);
 }
-button{
-  background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:6px;
-  padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap;
-}
-button:hover{background:#34343a}
-.hint{font-size:11px;color:var(--dim);margin-top:10px;line-height:1.6}
-h2{font-size:14px;color:var(--dim);margin:22px 0 10px;font-weight:500}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+.hint{font-size:11px;color:var(--text-muted);margin-top:8px;line-height:1.6}
+h2{font-size:13px;color:var(--text-secondary);margin:20px 0 10px;font-weight:500;display:flex;justify-content:space-between;align-items:baseline}
+h2 .count{font-size:11px;color:var(--text-muted);font-weight:400}
+.card{background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius);overflow:hidden}
 table{width:100%;border-collapse:collapse;font-size:12px}
-td,th{text-align:left;padding:7px 12px;border-bottom:1px solid var(--panel2)}
+td,th{text-align:left;padding:7px 12px;border-bottom:1px solid var(--border-subtle)}
 tr:last-child td{border-bottom:none}
-th{color:var(--dim);font-weight:400;font-size:11px}
-.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+th{color:var(--text-muted);font-weight:400;font-size:11px}
+tbody tr{cursor:pointer;transition:background .12s ease-out}
+tbody tr:hover{background:var(--bg-elevated)}
+.mono{font-family:var(--mono);max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ops{white-space:nowrap}
-.ops button{padding:3px 10px;font-size:11px}
-a.open{color:var(--accent);text-decoration:none;font-size:11px;margin-left:6px}
-.empty{color:var(--dim);font-size:12px;padding:16px;text-align:center}
+.ops button{padding:3px 9px;font-size:11px}
+a.open{color:var(--accent);font-size:11px;margin-left:6px}
+.empty{color:var(--text-muted);font-size:12px;padding:16px;text-align:center}
+.badge{
+  display:inline-block;font-family:var(--mono);font-size:10px;font-weight:600;
+  padding:1px 6px;border-radius:4px;margin-right:8px;vertical-align:1px;
+  background:var(--bg-raised);color:var(--text-secondary);letter-spacing:.5px;
+}
+.badge.img{color:#7dd3fc;background:rgba(125,211,252,.12)}
+.badge.vid{color:#c4b5fd;background:rgba(196,181,253,.12)}
+.badge.aud{color:#f9a8d4;background:rgba(249,168,212,.12)}
+.badge.pdf{color:#fca5a5;background:rgba(252,165,165,.12)}
+.badge.md{color:var(--accent);background:var(--accent-dim)}
+.badge.zip{color:var(--warn);background:rgba(251,191,36,.12)}
+/* ── viewer ── */
+.vbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.vbar .back{padding:4px 10px}
+.vbar .vname{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:46vw}
+.vbar .vmeta{font-size:11px;color:var(--text-muted);flex:none}
+.vbar .vops{margin-left:auto;display:flex;gap:8px;flex:none}
+.stage{
+  background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius);
+  min-height:320px;display:flex;align-items:center;justify-content:center;overflow:hidden;
+  position:relative;
+}
+.stage img{max-width:100%;max-height:70vh;display:block;cursor:grab;user-select:none;-webkit-user-drag:none}
+.stage img:active{cursor:grabbing}
+.stage .media{width:100%;max-height:70vh;display:block;background:#000}
+.stage .pdfbox{width:100%;height:75vh;border:none;display:block}
+.stage .fallback{padding:40px;text-align:center;color:var(--text-muted);font-size:13px}
+.stage .fallback .big{font-size:15px;color:var(--text-secondary);margin-bottom:8px}
+.code-scroll{overflow:auto;max-height:75vh;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius)}
+.code-inner{display:flex;min-width:max-content}
+.gutter{
+  flex:none;text-align:right;padding:14px 10px;user-select:none;
+  color:var(--text-muted);background:rgba(255,255,255,.02);border-right:1px solid var(--border-subtle);
+}
+pre.code{margin:0;padding:14px 18px;font-family:var(--mono);font-size:12.5px;line-height:1.65;overflow-x:auto}
+.gutter,pre.code{white-space:pre}
+.tk-c{color:#6b7280;font-style:italic}
+.tk-s{color:#86efac}
+.tk-n{color:#fbbf24}
+.tk-k{color:#7dd3fc}
+.tk-t{color:#c4b5fd}
+/* markdown */
+.md{padding:24px 28px;max-width:860px;line-height:1.75;font-size:14px;overflow-x:auto}
+.md h1{font-size:24px;font-weight:700;margin:20px 0 12px;line-height:1.3}
+.md h2{font-size:19px;font-weight:650;margin:18px 0 10px}
+.md h3{font-size:16px;font-weight:600;margin:16px 0 8px}
+.md h4,.md h5,.md h6{font-size:14px;font-weight:600;margin:14px 0 6px;color:var(--text-secondary)}
+.md p{margin:0 0 12px}
+.md ul,.md ol{margin:0 0 12px;padding-left:24px}
+.md li{margin:3px 0}
+.md blockquote{border-left:3px solid var(--border-default);padding:4px 14px;margin:0 0 12px;color:var(--text-secondary);background:rgba(255,255,255,.02)}
+.md code{font-family:var(--mono);font-size:12.5px;background:var(--bg-raised);padding:1px 5px;border-radius:4px}
+.md pre{background:var(--bg-canvas);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:14px 16px;overflow-x:auto;margin:0 0 14px}
+.md pre code{background:none;padding:0}
+.md table{border-collapse:collapse;margin:0 0 14px;font-size:13px}
+.md th,.md td{border:1px solid var(--border-default);padding:5px 12px}
+.md th{background:var(--bg-elevated);font-weight:600}
+.md hr{border:none;border-top:1px solid var(--border-default);margin:20px 0}
+.md img{max-width:100%;border-radius:var(--radius)}
+.md a{border-bottom:1px solid rgba(52,211,153,.4)}
+/* image filter toolbar */
+.ftool{display:flex;flex-wrap:wrap;gap:14px;align-items:center;background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius);padding:12px 16px;margin-top:12px}
+.fgroup{display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text-secondary)}
+.fgroup input[type=range]{width:110px;accent-color:var(--accent)}
+.fgroup .fval{font-family:var(--mono);font-size:11px;color:var(--text-muted);width:34px;text-align:right}
+.fbtns{display:flex;gap:8px;margin-left:auto;flex-wrap:wrap}
+/* zip list */
+.ziplist{width:100%;padding:8px 0}
+.ziprow{display:flex;align-items:center;gap:10px;padding:6px 16px;font-size:12px;cursor:pointer;transition:background .12s ease-out}
+.ziprow:hover{background:var(--bg-elevated)}
+.ziprow .zn{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:var(--mono);font-size:11.5px}
+.ziprow .zs{color:var(--text-muted);font-size:11px;flex:none}
+/* ── editor ── */
+.edbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
+.edbar .ename{font-size:13px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.edbar .edstate{font-size:11px;color:var(--text-muted)}
+.edbar .edstate.dirty{color:var(--warn)}
+.edbar .edops{margin-left:auto;display:flex;gap:8px}
+.ed-split{display:flex;gap:12px;align-items:stretch}
+.ed-pane{flex:1;min-width:0;display:flex;flex-direction:column}
+.ed-pane .pane-h{font-size:11px;color:var(--text-muted);margin-bottom:6px}
+.ed-box{
+  display:flex;position:relative;background:var(--bg-surface);
+  border:1px solid var(--border-subtle);border-radius:var(--radius);overflow:hidden;
+  height:min(72vh,720px);
+}
+.ed-gutter{
+  flex:none;overflow:hidden;text-align:right;padding:14px 10px;user-select:none;
+  color:var(--text-muted);background:rgba(255,255,255,.02);border-right:1px solid var(--border-subtle);
+  font-family:var(--mono);font-size:12.5px;line-height:1.65;
+}
+.ed-gutter>div{will-change:transform}
+textarea.ed{
+  flex:1;resize:none;border:none;outline:none;background:transparent;
+  font-family:var(--mono);font-size:12.5px;line-height:1.65;padding:14px 18px;
+  white-space:pre;overflow:auto;tab-size:2;
+}
+.ed-preview{
+  background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius);
+  overflow:auto;height:min(72vh,720px);
+}
+.toast{
+  position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(12px);
+  background:var(--bg-raised);border:1px solid var(--border-default);color:var(--text-primary);
+  padding:8px 18px;border-radius:var(--radius);font-size:12px;opacity:0;pointer-events:none;
+  transition:opacity .2s ease-out,transform .2s ease-out;z-index:50;
+}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+@media (max-width:760px){
+  .ed-split{flex-direction:column}
+  .vbar .vname{max-width:60vw}
+  .fbtns{margin-left:0}
+}
+@media (prefers-reduced-motion:reduce){
+  *{transition:none!important}
+}
 </style>
 </head>
 <body>
-<div class="wrap">
-  <header>
-    <h1>Meow File Share</h1>
-  </header>
+<div class="wrap" id="app"></div>
+<div class="toast" id="toast"></div>
 
-  <div class="drop" id="drop">
-    <div class="big">把檔案拖進來，或點這裡選擇</div>
-    <div class="small">單檔最大 1GB · 限家庭網路 · 7 天後自動刪除</div>
-    <input type="file" id="file" multiple hidden>
-  </div>
-
-  <div class="queue" id="queue"></div>
-
-  <h2>最近上傳</h2>
-  <div class="card">
-    <table>
-      <thead><tr><th>檔案</th><th>大小</th><th>時間</th><th></th></tr></thead>
-      <tbody id="recent"></tbody>
-    </table>
-    <div class="empty" id="recentEmpty">尚無檔案</div>
-  </div>
-</div>
 <script>
-const $ = id => document.getElementById(id);
-const drop = $('drop'), fileInput = $('file'), queueEl = $('queue');
+'use strict';
+// ── utils ────────────────────────────────────────────────────────────
+const $app = document.getElementById('app');
 const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 const fmtSize = n => n < 1024 ? n + ' B'
   : n < 1048576 ? (n/1024).toFixed(1) + ' KB'
@@ -139,14 +267,22 @@ const fmtSize = n => n < 1024 ? n + ' B'
   : (n/1073741824).toFixed(2) + ' GB';
 const fmtTime = t => new Date(t*1000).toLocaleString('zh-TW',
   {month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});
+const fileUrl = name => '/files/' + encodeURIComponent(name);
+const viewUrl = name => '/view/' + encodeURIComponent(name);
+const editUrl = name => '/edit/' + encodeURIComponent(name);
+const absUrl = name => location.origin + fileUrl(name);
 
-fetch('/health').then(r => r.json()).then(() => {
-  loadRecent();
-}).catch(() => {});
-
+let toastTimer = null;
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 1800);
+}
 function copyText(text, btn) {
-  const done = () => { const o = btn.textContent; btn.textContent = '已複製!';
-    setTimeout(() => btn.textContent = o, 1200); };
+  const done = () => { if (btn) { const o = btn.textContent; btn.textContent = '已複製';
+    setTimeout(() => btn.textContent = o, 1200); } else toast('已複製連結'); };
   const fallback = () => {
     const ta = document.createElement('textarea');
     ta.value = text; ta.style.cssText = 'position:fixed;opacity:0';
@@ -159,39 +295,124 @@ function copyText(text, btn) {
     navigator.clipboard.writeText(text).then(done).catch(fallback);
   else fallback();
 }
-document.addEventListener('click', e => {
-  const b = e.target.closest('button[data-copy]');
-  if (b) copyText(b.dataset.copy, b);
-});
-
-async function loadRecent() {
-  try {
-    const list = await (await fetch('/files')).json();
-    const tb = $('recent'); tb.innerHTML = '';
-    $('recentEmpty').style.display = list.length ? 'none' : 'block';
-    for (const it of list.slice(0, 30)) {
-      const url = '/files/' + encodeURIComponent(it.name);
-      const tr = document.createElement('tr');
-      tr.innerHTML =
-        '<td class="mono" title="' + esc(it.name) + '">' + esc(it.orig) + '</td>' +
-        '<td>' + fmtSize(it.size) + '</td><td>' + fmtTime(it.mtime) + '</td>' +
-        '<td class="ops"><button data-copy="' + esc(url) + '">複製</button>' +
-        '<a class="open" href="' + esc(url) + '">開啟</a></td>';
-      tb.appendChild(tr);
-    }
-  } catch (e) { /* ignore */ }
+async function downloadBlob(name) {
+  const r = await fetch(fileUrl(name) + '?mode=download');
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const b = await r.blob();
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(b);
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
 }
 
-drop.addEventListener('click', () => fileInput.click());
-fileInput.addEventListener('change', () => { addFiles(fileInput.files); fileInput.value = ''; });
-['dragenter','dragover'].forEach(ev =>
-  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
-['dragleave','drop'].forEach(ev =>
-  drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
-drop.addEventListener('drop', e => addFiles(e.dataTransfer.files));
+// ── file type detection ──────────────────────────────────────────────
+const EXT = {
+  img: ['jpg','jpeg','png','gif','webp','bmp','svg','avif','ico'],
+  vid: ['mp4','webm','mkv','mov','avi','m4v'],
+  aud: ['mp3','wav','ogg','m4a','flac','aac','opus'],
+  pdf: ['pdf'],
+  md:  ['md','markdown'],
+  zip: ['zip'],
+  code: ['txt','log','csv','py','js','ts','jsx','tsx','json','yaml','yml','toml',
+         'ini','conf','cfg','env','gitignore','sh','bash','zsh','bat','ps1',
+         'css','html','htm','xml','c','h','cpp','hpp','rs','go','java','kt',
+         'swift','sql','lua','r','php','pl','vb','srt','vtt','properties','gradle'],
+};
+function extOf(name) {
+  const i = name.lastIndexOf('.');
+  return i > 0 ? name.slice(i+1).toLowerCase() : '';
+}
+function kindOf(name) {
+  const e = extOf(name);
+  for (const k of Object.keys(EXT)) if (EXT[k].includes(e)) return k;
+  return 'bin';
+}
+function badgeOf(name) {
+  const k = kindOf(name), e = extOf(name);
+  const label = {img:'IMG',vid:'VID',aud:'AUD',pdf:'PDF',md:'MD',zip:'ZIP',code:e.toUpperCase().slice(0,4)}[k] || 'BIN';
+  return {label, cls: k === 'code' ? '' : k};
+}
+const TEXT_KINDS = new Set(['md','code']);
 
-function addFiles(files) { for (const f of files) upload(f); }
+// ── routing ──────────────────────────────────────────────────────────
+function route() {
+  const p = location.pathname;
+  if (p.startsWith('/view/')) return showViewer(decodeURIComponent(p.slice(6)));
+  if (p.startsWith('/edit/')) return showEditor(decodeURIComponent(p.slice(6)));
+  return showList();
+}
+window.addEventListener('popstate', route);
 
+// ── list view ────────────────────────────────────────────────────────
+let lastFiles = [];
+async function showList() {
+  $app.innerHTML =
+    '<header><h1>Meow File Share</h1>' +
+    '<input class="search" id="q" type="search" placeholder="搜尋檔案名稱…" autocomplete="off"></header>' +
+    '<div class="drop" id="drop">' +
+    '<div class="big">把檔案拖進來，或點這裡選擇</div>' +
+    '<div class="small">單檔最大 1GB · 限家庭網路 · 7 天後自動刪除</div>' +
+    '<input type="file" id="file" multiple hidden></div>' +
+    '<div class="queue" id="queue"></div>' +
+    '<h2>檔案 <span class="count" id="count"></span></h2>' +
+    '<div class="card"><table>' +
+    '<thead><tr><th>檔案</th><th>大小</th><th>時間</th><th></th></tr></thead>' +
+    '<tbody id="rows"></tbody></table>' +
+    '<div class="empty" id="empty" style="display:none">尚無檔案</div></div>';
+
+  const q = document.getElementById('q');
+  let deb = null;
+  q.addEventListener('input', () => {
+    clearTimeout(deb);
+    deb = setTimeout(() => loadFiles(q.value.trim()), 200);
+  });
+  const drop = document.getElementById('drop'), fi = document.getElementById('file');
+  drop.addEventListener('click', () => fi.click());
+  fi.addEventListener('change', () => { for (const f of fi.files) upload(f); fi.value = ''; });
+  ['dragenter','dragover'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+  ['dragleave','drop'].forEach(ev =>
+    drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+  drop.addEventListener('drop', e => { for (const f of e.dataTransfer.files) upload(f); });
+
+  await loadFiles('');
+}
+
+async function loadFiles(query) {
+  let list;
+  try {
+    list = await (await fetch('/files' + (query ? '?q=' + encodeURIComponent(query) : ''))).json();
+  } catch (e) { return; }
+  lastFiles = list;
+  const tb = document.getElementById('rows');
+  if (!tb) return;
+  tb.innerHTML = '';
+  document.getElementById('empty').style.display = list.length ? 'none' : 'block';
+  const c = document.getElementById('count');
+  if (c) c.textContent = list.length + (query ? ' 個（搜尋）' : ' 個');
+  for (const it of list) {
+    const b = badgeOf(it.orig);
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td class="mono" title="' + esc(it.orig) + '"><span class="badge ' + b.cls + '">' + b.label + '</span>' +
+      esc(it.orig) + '</td>' +
+      '<td style="white-space:nowrap">' + fmtSize(it.size) + '</td>' +
+      '<td style="white-space:nowrap;color:var(--text-secondary)">' + fmtTime(it.mtime) + '</td>' +
+      '<td class="ops"><button data-act="copy" data-name="' + esc(it.name) + '">複製</button>' +
+      '<a class="open" href="' + esc(fileUrl(it.name)) + '">下載</a></td>';
+    tr.addEventListener('click', e => {
+      if (e.target.closest('button, a')) return;
+      location.href = viewUrl(it.name);
+    });
+    tb.appendChild(tr);
+  }
+  // copy buttons (delegated)
+  tb.querySelectorAll('button[data-act=copy]').forEach(btn =>
+    btn.addEventListener('click', () => copyText(absUrl(btn.dataset.name), btn)));
+}
+
+// ── upload ───────────────────────────────────────────────────────────
 function upload(file) {
   const item = document.createElement('div');
   item.className = 'item';
@@ -199,11 +420,10 @@ function upload(file) {
     '<div class="row1"><span class="name" title="' + esc(file.name) + '">' + esc(file.name) +
     '</span><span class="meta">' + fmtSize(file.size) + ' · 0%</span></div>' +
     '<div class="bar"><div></div></div><div class="result"></div>';
-  queueEl.prepend(item);
+  document.getElementById('queue').prepend(item);
   const bar = item.querySelector('.bar > div'),
         meta = item.querySelector('.meta'),
         result = item.querySelector('.result');
-
   const xhr = new XMLHttpRequest();
   xhr.open('POST', '/upload?name=' + encodeURIComponent(file.name));
   let lastT = performance.now(), lastB = 0;
@@ -225,28 +445,596 @@ function upload(file) {
       meta.textContent = fmtSize(file.size) + ' · 完成';
       let data = {};
       try { data = JSON.parse(xhr.responseText); } catch (e) {}
-      const rows = [];
-      if (data.url) rows.push(['LAN 連結', data.url]);
-      result.innerHTML = rows.map(r =>
-        '<div class="lbl">' + r[0] + '</div><div class="urlbox">' +
-        '<input readonly value="' + esc(r[1]) + '"><button data-copy="' + esc(r[1]) + '">複製</button>' +
-        '</div>').join('') +
-        '<div class="hint">把連結貼到跟小夜的對話，她就能直接讀到檔案</div>';
-      loadRecent();
+      if (data.url) {
+        result.innerHTML =
+          '<div class="lbl">LAN 連結</div><div class="urlbox">' +
+          '<input readonly value="' + esc(data.url) + '">' +
+          '<button data-copy="' + esc(data.url) + '">複製</button></div>' +
+          '<div class="hint">點上方清單可開啟預覽；把連結貼給小夜她就能直接讀到檔案</div>';
+        result.querySelector('button').addEventListener('click', function () {
+          copyText(data.url, this);
+        });
+        loadFiles(document.getElementById('q') ? document.getElementById('q').value.trim() : '');
+      }
     } else {
       item.classList.add('err');
       meta.textContent = '失敗 (HTTP ' + xhr.status + ')';
       result.innerHTML = '<div class="hint">' + esc(xhr.responseText.slice(0, 300)) + '</div>';
     }
   };
-  xhr.onerror = () => {
-    item.classList.add('err');
-    meta.textContent = '網路錯誤';
-  };
+  xhr.onerror = () => { item.classList.add('err'); meta.textContent = '網路錯誤'; };
   xhr.send(file);
 }
 
-loadRecent();
+// ── markdown renderer (built-in, ~compact) ───────────────────────────
+function inlineMD(s) {
+  s = esc(s);
+  const codes = [];
+  s = s.replace(/`([^`]+)`/g, (m, c) => { codes.push(c); return '\x00' + (codes.length - 1) + '\x00'; });
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+[^)]*)?\)/g, '<img alt="$1" src="$2">');
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+[^)]*)?\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/&lt;([^\s&]+)&gt;/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  s = s.replace(/\*\*\*([^*]+)\*\*\*/g, '<strong><em>$1</em></strong>');
+  s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  s = s.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  s = s.replace(/(^|[^\w])__([^_\n]+)__/g, '$1<strong>$2</strong>');
+  s = s.replace(/(^|[^\w])_([^_\n]+)_/g, '$1<em>$2</em>');
+  s = s.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+  s = s.replace(/\x00(\d+)\x00/g, (m, n) => '<code>' + codes[+n] + '</code>');
+  return s;
+}
+function splitRow(line) {
+  return line.trim().replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+}
+function renderMD(src) {
+  const lines = String(src).replace(/\r\n?/g, '\n').split('\n');
+  let html = '', i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (/^```/.test(line)) {
+      i++;
+      const buf = [];
+      while (i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i++]);
+      i++;
+      html += '<pre><code>' + esc(buf.join('\n')) + '</code></pre>';
+      continue;
+    }
+    if (/^\s*$/.test(line)) { i++; continue; }
+    const h = line.match(/^(#{1,6})\s+(.*)/);
+    if (h) {
+      const l = h[1].length;
+      html += '<h' + l + '>' + inlineMD(h[2]) + '</h' + l + '>';
+      i++; continue;
+    }
+    if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(line)) { html += '<hr>'; i++; continue; }
+    if (/^>\s?/.test(line)) {
+      const buf = [];
+      while (i < lines.length && /^>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^>\s?/, ''));
+      html += '<blockquote>' + renderMD(buf.join('\n')) + '</blockquote>';
+      continue;
+    }
+    if (line.includes('|') && i + 1 < lines.length &&
+        /^\s*\|?[\s:|-]+\|[\s:|-]*$/.test(lines[i+1]) && lines[i+1].includes('-')) {
+      const header = splitRow(line);
+      i += 2;
+      const rows = [];
+      while (i < lines.length && lines[i].includes('|') && !/^\s*$/.test(lines[i]))
+        rows.push(splitRow(lines[i++]));
+      html += '<table><thead><tr>' +
+        header.map(c => '<th>' + inlineMD(c) + '</th>').join('') +
+        '</tr></thead><tbody>' +
+        rows.map(r => '<tr>' + r.map(c => '<td>' + inlineMD(c) + '</td>').join('') + '</tr>').join('') +
+        '</tbody></table>';
+      continue;
+    }
+    if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
+      const ordered = /^\s*\d+\.\s+/.test(line);
+      const items = [];
+      while (i < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[i]))
+        items.push(lines[i++].replace(/^\s*([-*+]|\d+\.)\s+/, ''));
+      html += (ordered ? '<ol>' : '<ul>') +
+        items.map(it => '<li>' + inlineMD(it) + '</li>').join('') +
+        (ordered ? '</ol>' : '</ul>');
+      continue;
+    }
+    const buf = [line];
+    i++;
+    while (i < lines.length && !/^\s*$/.test(lines[i]) &&
+           !/^(#{1,6}\s|```|>\s?|\s*(-{3,})\s*$|\s*([-*+]|\d+\.)\s+)/.test(lines[i]))
+      buf.push(lines[i++]);
+    html += '<p>' + buf.map(inlineMD).join('<br>') + '</p>';
+  }
+  return html;
+}
+
+// ── syntax highlighter (minimal, per-language-family) ────────────────
+const NEVER = '(?!)';
+const KW = {
+  js: 'const|let|var|function|return|if|else|for|while|do|class|new|import|export|from|async|await|try|catch|finally|throw|switch|case|break|continue|default|typeof|instanceof|in|of|this|super|extends|static|get|set|delete|void|yield|enum|interface|type|public|private|protected|readonly|as|is|keyof|never|unknown|any|boolean|number|string|object|symbol|bigint|true|false|null|undefined|console|document|window',
+  py: 'def|return|if|elif|else|for|while|class|import|from|as|with|try|except|finally|raise|pass|break|continue|lambda|yield|global|nonlocal|assert|del|in|not|and|or|is|None|True|False|self|print|async|await|match|case',
+  sh: 'if|then|else|elif|fi|for|while|do|done|case|esac|function|in|return|exit|local|export|echo|set|unset|source|shift|break|continue|read|cd|ls|grep|awk|sed|find|curl|ssh|sudo|apt|pip|python3|git|docker',
+  sql: 'select|from|where|insert|into|values|update|set|delete|create|table|drop|alter|add|join|left|right|inner|outer|on|as|and|or|not|in|is|null|like|between|order|by|group|having|limit|offset|distinct|count|sum|avg|min|max|primary|key|foreign|references|index|view|if|exists|case|when|then|else|end|union|all',
+  css: 'color|background|margin|padding|border|display|position|width|height|font|line-height|text-align|overflow|flex|grid|top|left|right|bottom|z-index|opacity|transform|transition|animation|content|box-sizing|cursor|gap|align-items|justify-content|max-width|min-width|border-radius|box-shadow|white-space|vertical-align|letter-spacing|font-weight|font-size|background-color|border-color|outline|visibility|pointer-events|user-select|will-change|accent-color|tab-size|resize|overflow-x|overflow-y',
+  yaml: 'true|false|null|yes|no|on|off',
+  ini: 'true|false|null|yes|no',
+  json: 'true|false|null',
+};
+const HL_SPECS = {
+  js:   { com: '//[^\n]*|/\\*[\\s\\S]*?\\*/', str: "'(?:\\\\.|[^'\\\\\\n])*'|\"(?:\\\\.|[^\"\\\\\\n])*\"|`(?:\\\\.|[^`\\\\])*`", num: '\\b0[xXbBoO][\\da-fA-F]+\\b|\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b', kw: KW.js },
+  py:   { com: '#[^\n]*', str: "'''[\\s\\S]*?'''|\"\"\"[\\s\\S]*?\"\"\"|'(?:\\\\.|[^'\\\\\\n])*'|\"(?:\\\\.|[^\"\\\\\\n])*\"", num: '\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b', kw: KW.py },
+  sh:   { com: '#[^\n]*', str: "'(?:\\\\.|[^'\\\\\\n])*'|\"(?:\\\\.|[^\"\\\\\\n])*\"", num: '\\b\\d+\\b', kw: KW.sh },
+  sql:  { com: '--[^\n]*', str: "'(?:''|[^'])*'", num: '\\b\\d[\\d_]*(?:\\.\\d+)?\\b', kw: KW.sql },
+  css:  { com: '/\\*[\\s\\S]*?\\*/', str: "'[^'\\n]*'|\"[^\"\\n]*\"", num: '#[\\da-fA-F]{3,8}\\b|\\b\\d+(?:\\.\\d+)?(?:px|em|rem|%|vh|vw|s|ms|deg|fr|ch|ex)?\\b', kw: KW.css },
+  html: { com: '<!--[\\s\\S]*?-->', str: "'[^'\\n]*'|\"[^\"\\n]*\"", num: NEVER, kw: NEVER, tag: '</?[a-zA-Z][\\w-]*' },
+  yaml: { com: '#[^\n]*', str: "'(?:\\\\.|[^'\\\\\\n])*'|\"(?:\\\\.|[^\"\\\\\\n])*\"", num: '\\b\\d[\\d_]*(?:\\.\\d+)?\\b', kw: KW.yaml },
+  ini:  { com: '#[^\\n]*|;[^\n]*', str: "'[^'\\n]*'|\"[^\"\\n]*\"", num: '\\b\\d[\\d_]*(?:\\.\\d+)?\\b', kw: KW.ini },
+  json: { com: NEVER, str: "\"(?:\\\\.|[^\"\\\\\\n])*\"", num: '\\b\\d+(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b', kw: KW.json },
+  plain:{ com: NEVER, str: NEVER, num: NEVER, kw: NEVER },
+};
+const HL_LANG = {
+  js:'js', ts:'js', jsx:'js', tsx:'js', mjs:'js', cjs:'js',
+  py:'py', sh:'sh', bash:'sh', zsh:'sh', bat:'sh', ps1:'sh',
+  sql:'sql', css:'css', html:'html', htm:'html', xml:'html', svg:'html',
+  yaml:'yaml', yml:'yaml', toml:'ini', ini:'ini', conf:'ini', cfg:'ini',
+  env:'ini', gitignore:'ini', properties:'ini',
+  json:'json',
+};
+function highlight(code, name) {
+  const lang = HL_LANG[extOf(name)] || 'plain';
+  const spec = HL_SPECS[lang];
+  if (spec.com === NEVER && spec.str === NEVER && spec.num === NEVER &&
+      spec.kw === NEVER && !spec.tag) return esc(code);
+  const parts = [
+    '(' + spec.com + ')',
+    '(' + spec.str + ')',
+    '(' + spec.num + ')',
+    spec.kw !== NEVER ? '(\\b(?:' + spec.kw + ')\\b)' : '(' + NEVER + ')',
+  ];
+  if (spec.tag) parts.push('(' + spec.tag + ')');
+  const re = new RegExp(parts.join('|'), 'g');
+  let out = '', last = 0, m;
+  while ((m = re.exec(code))) {
+    if (m[0].length === 0) { re.lastIndex++; continue; }
+    if (m.index > last) out += esc(code.slice(last, m.index));
+    let cls = 'k';
+    if (m[1] !== undefined) cls = 'c';
+    else if (m[2] !== undefined) cls = 's';
+    else if (m[3] !== undefined) cls = 'n';
+    else if (m[5] !== undefined) cls = 't';
+    out += '<span class="tk-' + cls + '">' + esc(m[0]) + '</span>';
+    last = re.lastIndex;
+  }
+  out += esc(code.slice(last));
+  return out;
+}
+
+// ── viewer ───────────────────────────────────────────────────────────
+async function showViewer(name) {
+  let meta = lastFiles.find(f => f.name === name);
+  if (!meta) {
+    try {
+      const list = await (await fetch('/files')).json();
+      lastFiles = list;
+      meta = list.find(f => f.name === name);
+    } catch (e) {}
+  }
+  const orig = (meta && meta.orig) || name;
+  const size = meta ? fmtSize(meta.size) : '';
+  const kind = kindOf(name);
+
+  $app.innerHTML =
+    '<div class="vbar">' +
+    '<button class="back" id="back">← 檔案清單</button>' +
+    '<span class="vname" title="' + esc(orig) + '">' + esc(orig) + '</span>' +
+    (size ? '<span class="vmeta">' + size + '</span>' : '') +
+    '<span class="vops">' +
+    '<button id="opCopy">複製連結</button>' +
+    '<button id="opDl">下載</button>' +
+    (TEXT_KINDS.has(kind) ? '<button id="opEdit" class="primary">編輯</button>' : '') +
+    '</span></div>' +
+    '<div id="vbody"><div class="stage"><div class="fallback">載入中…</div></div></div>';
+
+  document.getElementById('back').addEventListener('click', () => history.back());
+  document.getElementById('opCopy').addEventListener('click', function () { copyText(absUrl(name), this); });
+  document.getElementById('opDl').addEventListener('click', () => downloadBlob(orig).catch(() => toast('下載失敗')));
+  const opEdit = document.getElementById('opEdit');
+  if (opEdit) opEdit.addEventListener('click', () => location.href = editUrl(name));
+
+  const body = document.getElementById('vbody');
+  const fail = msg => {
+    body.innerHTML = '<div class="stage"><div class="fallback"><div class="big">無法預覽</div>' +
+      esc(msg) + '<div style="margin-top:14px"><button id="fbDl">下載檔案</button></div></div></div>';
+    document.getElementById('fbDl').addEventListener('click', () => downloadBlob(orig).catch(() => {}));
+  };
+
+  try {
+    if (kind === 'img') return viewImage(name, orig, body);
+    if (kind === 'vid' || kind === 'aud') {
+      const tag = kind === 'vid' ? 'video' : 'audio';
+      body.innerHTML = '<div class="stage"><' + tag + ' class="media" controls src="' + esc(fileUrl(name)) + '"></' + tag + '></div>';
+      return;
+    }
+    if (kind === 'pdf') {
+      body.innerHTML = '<div class="stage"><iframe class="pdfbox" src="' + esc(fileUrl(name) + '?mode=inline') + '"></iframe></div>';
+      return;
+    }
+    if (kind === 'zip') return viewZip(name, orig, body);
+    if (TEXT_KINDS.has(kind)) return viewText(name, orig, body);
+    // binary fallback
+    body.innerHTML = '<div class="stage"><div class="fallback"><div class="big">此類型沒有內建預覽</div>' +
+      '直接下載開啟<div style="margin-top:14px"><button id="fbDl">下載檔案</button></div></div></div>';
+    document.getElementById('fbDl').addEventListener('click', () => downloadBlob(orig).catch(() => {}));
+  } catch (e) { fail(e.message || String(e)); }
+}
+
+async function fetchText(name) {
+  const r = await fetch(fileUrl(name));
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.text();
+}
+
+function viewText(name, orig, body) {
+  fetchText(name).then(text => {
+    if (text.length > 2 * 1024 * 1024) {
+      body.innerHTML = '<div class="stage"><div class="fallback"><div class="big">檔案超過 2MB</div>為保持流暢不內嵌顯示，請下載開啟</div></div>';
+      return;
+    }
+    const isMd = kindOf(name) === 'md';
+    const lines = text.split('\n').length;
+    const nums = Array.from({length: lines}, (_, i) => i + 1).join('\n');
+    const content = isMd
+      ? '<div class="md">' + renderMD(text) + '</div>'
+      : '<div class="code-scroll"><div class="code-inner"><div class="gutter">' + nums + '</div><pre class="code"><code>' + highlight(text, name) + '</code></pre></div></div>';
+    body.innerHTML =
+      (isMd ? '<div class="vbar" style="margin-top:14px"><button id="mdToggle">切換原始碼</button><span class="vmeta">' + lines + ' 行</span></div>' : '<div class="vbar" style="margin-top:14px"><span class="vmeta">' + lines + ' 行 · ' + fmtSize(text.length) + '</span></div>') +
+      '<div id="mdWrap">' + content + '</div>';
+    if (isMd) {
+      let raw = false;
+      document.getElementById('mdToggle').addEventListener('click', function () {
+        raw = !raw;
+        document.getElementById('mdWrap').innerHTML = raw
+          ? '<div class="code-scroll"><div class="code-inner"><div class="gutter">' + nums + '</div><pre class="code"><code>' + esc(text) + '</code></pre></div></div>'
+          : '<div class="md">' + renderMD(text) + '</div>';
+        this.textContent = raw ? '切換渲染' : '切換原始碼';
+      });
+    }
+  }).catch(e => {
+    body.innerHTML = '<div class="stage"><div class="fallback">讀取失敗：' + esc(e.message) + '</div></div>';
+  });
+}
+
+// ── image viewer: zoom / pan / filters / export ──────────────────────
+function viewImage(name, orig, body) {
+  const url = fileUrl(name);
+  body.innerHTML =
+    '<div class="stage" id="stage"><img id="vimg" src="' + esc(url) + '" alt="' + esc(orig) + '"></div>' +
+    '<div class="ftool" id="ftool">' +
+    fSlider('亮度', 'bright', 100, 0, 200) +
+    fSlider('對比', 'contrast', 100, 0, 200) +
+    fSlider('飽和', 'saturate', 100, 0, 300) +
+    fSlider('模糊', 'blur', 0, 0, 10) +
+    fSlider('懷舊', 'sepia', 0, 0, 100) +
+    fSlider('灰階', 'gray', 0, 0, 100) +
+    '<span class="fbtns">' +
+    '<button id="fRot">旋轉 90°</button>' +
+    '<button id="fFlipH">左右翻轉</button>' +
+    '<button id="fFlipV">上下翻轉</button>' +
+    '<button id="fReset">重設</button>' +
+    '<button id="fFit">適應視窗</button>' +
+    '<button id="fSave" class="primary">另存新檔</button>' +
+    '</span></div>';
+
+  const img = document.getElementById('vimg');
+  const stage = document.getElementById('stage');
+  const S = { scale: 1, tx: 0, ty: 0, rot: 0, fh: false, fv: false,
+              bright: 100, contrast: 100, saturate: 100, blur: 0, sepia: 0, gray: 0 };
+  const unit = v => (v === 0 || v === 100) ? '' : v / 100;
+  function filterCSS() {
+    return 'brightness(' + (S.bright/100) + ') contrast(' + (S.contrast/100) + ') saturate(' +
+      (S.saturate/100) + ')' + (S.blur ? ' blur(' + S.blur + 'px)' : '') +
+      (S.sepia ? ' sepia(' + (S.sepia/100) + ')' : '') + (S.gray ? ' grayscale(' + (S.gray/100) + ')' : '');
+  }
+  function apply() {
+    img.style.transform = 'translate(' + S.tx + 'px,' + S.ty + 'px) scale(' + S.scale + ') rotate(' + S.rot + 'deg)' +
+      (S.fh ? ' scaleX(-1)' : '') + (S.fv ? ' scaleY(-1)' : '');
+    img.style.filter = filterCSS();
+  }
+  apply();
+
+  // zoom toward cursor
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    const f = e.deltaY < 0 ? 1.12 : 1/1.12;
+    const ns = Math.min(8, Math.max(0.1, S.scale * f));
+    const rect = stage.getBoundingClientRect();
+    const cx = e.clientX - rect.left - rect.width/2;
+    const cy = e.clientY - rect.top - rect.height/2;
+    const k = ns / S.scale;
+    S.tx = cx - k * (cx - S.tx);
+    S.ty = cy - k * (cy - S.ty);
+    S.scale = ns;
+    apply();
+  }, {passive: false});
+  // pan
+  let drag = null;
+  stage.addEventListener('pointerdown', e => {
+    drag = {x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty};
+    stage.setPointerCapture(e.pointerId);
+  });
+  stage.addEventListener('pointermove', e => {
+    if (!drag) return;
+    S.tx = drag.tx + (e.clientX - drag.x);
+    S.ty = drag.ty + (e.clientY - drag.y);
+    apply();
+  });
+  ['pointerup','pointercancel'].forEach(ev => stage.addEventListener(ev, () => drag = null));
+  stage.addEventListener('dblclick', () => {
+    if (S.scale === 1) { S.scale = 2; } else { S.scale = 1; S.tx = 0; S.ty = 0; }
+    apply();
+  });
+
+  // filters
+  const sliders = {};
+  document.querySelectorAll('#ftool input[type=range]').forEach(r => {
+    sliders[r.id] = r;
+    r.addEventListener('input', () => {
+      S[r.id] = +r.value;
+      r.parentElement.querySelector('.fval').textContent = r.value;
+      apply();
+    });
+  });
+  document.getElementById('fRot').addEventListener('click', () => { S.rot = (S.rot + 90) % 360; apply(); });
+  document.getElementById('fFlipH').addEventListener('click', () => { S.fh = !S.fh; apply(); });
+  document.getElementById('fFlipV').addEventListener('click', () => { S.fv = !S.fv; apply(); });
+  document.getElementById('fReset').addEventListener('click', () => {
+    Object.assign(S, {scale:1,tx:0,ty:0,rot:0,fh:false,fv:false,bright:100,contrast:100,saturate:100,blur:0,sepia:0,gray:0});
+    for (const id in sliders) {
+      sliders[id].value = +sliders[id].dataset.def;
+      sliders[id].parentElement.querySelector('.fval').textContent = sliders[id].dataset.def;
+    }
+    apply();
+  });
+  document.getElementById('fFit').addEventListener('click', () => { S.scale = 1; S.tx = 0; S.ty = 0; apply(); });
+
+  // export as new copy via canvas
+  document.getElementById('fSave').addEventListener('click', async () => {
+    try {
+      const w = img.naturalWidth, h = img.naturalHeight;
+      const swap = S.rot % 180 !== 0;
+      const canvas = document.createElement('canvas');
+      canvas.width = swap ? h : w;
+      canvas.height = swap ? w : h;
+      const ctx = canvas.getContext('2d');
+      const filterSupported = typeof ctx.filter === 'string';
+      if (filterSupported) ctx.filter = filterCSS();
+      ctx.translate(canvas.width/2, canvas.height/2);
+      ctx.rotate(S.rot * Math.PI/180);
+      ctx.scale(S.fh ? -1 : 1, S.fv ? -1 : 1);
+      ctx.drawImage(img, -w/2, -h/2);
+      const isJpeg = /jpe?g/i.test(extOf(orig));
+      const blob = await new Promise(res =>
+        canvas.toBlob(res, isJpeg ? 'image/jpeg' : 'image/png', 0.92));
+      if (!blob) throw new Error('canvas 匯出失敗');
+      const base = orig.replace(/\.[^.]+$/, '');
+      const newName = base + '_edited' + (isJpeg ? '.jpg' : '.png');
+      const r = await fetch('/upload?name=' + encodeURIComponent(newName), {
+        method: 'POST', body: blob,
+      });
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      toast(filterSupported ? '已另存新檔' : '已另存（此瀏覽器不支援濾鏡匯出）');
+      showSaved(data.url, newName);
+    } catch (e) { toast('匯出失敗：' + e.message); }
+  });
+}
+function fSlider(label, id, def, min, max) {
+  return '<span class="fgroup">' + label +
+    '<input type="range" id="' + id + '" data-def="' + def + '" min="' + min + '" max="' + max + '" value="' + def + '">' +
+    '<span class="fval">' + def + '</span></span>';
+}
+function showSaved(url, newName) {
+  const w = document.createElement('div');
+  w.style.cssText = 'margin-top:12px;background:var(--bg-surface);border:1px solid rgba(52,211,153,.3);border-radius:var(--radius);padding:12px 16px;font-size:12px';
+  w.innerHTML = '<span style="color:var(--accent)">已另存：</span><span class="mono" style="max-width:none">' + esc(newName) + '</span>' +
+    '<div class="urlbox" style="margin-top:8px"><input readonly value="' + esc(url) + '"><button id="svCopy">複製</button></div>';
+  $app.appendChild(w);
+  w.querySelector('#svCopy').addEventListener('click', function () { copyText(url, this); });
+}
+
+// ── zip viewer (native DecompressionStream) ──────────────────────────
+async function viewZip(name, orig, body) {
+  const r = await fetch(fileUrl(name));
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  const buf = new Uint8Array(await r.arrayBuffer());
+  const entries = parseZip(buf);
+  if (!entries.length) throw new Error('找不到 zip 目錄');
+  const list = document.createElement('div');
+  list.className = 'ziplist';
+  list.innerHTML = '<div class="vbar" style="margin:0 0 8px"><span class="vmeta">' + entries.length + ' 個項目</span></div>';
+  for (const en of entries) {
+    if (en.dir) continue;
+    const row = document.createElement('div');
+    row.className = 'ziprow';
+    row.innerHTML = '<span class="zn">' + esc(en.name) + '</span><span class="zs">' + fmtSize(en.size) + '</span>';
+    row.addEventListener('click', () => previewZipEntry(name, orig, en, buf));
+    list.appendChild(row);
+  }
+  body.innerHTML = '';
+  body.appendChild(list);
+}
+function parseZip(buf) {
+  // EOCD scan
+  let eocd = -1;
+  for (let i = buf.length - 22; i >= Math.max(0, buf.length - 65558); i--) {
+    if (buf[i] === 0x50 && buf[i+1] === 0x4b && buf[i+2] === 0x05 && buf[i+3] === 0x06) { eocd = i; break; }
+  }
+  if (eocd < 0) return [];
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const count = dv.getUint16(eocd + 10, true);
+  const off = dv.getUint32(eocd + 16, true);
+  const out = [];
+  let p = off;
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(p, true) !== 0x02014b50) break;
+    const method = dv.getUint16(p + 10, true);
+    const csize = dv.getUint32(p + 20, true);
+    const usize = dv.getUint32(p + 24, true);
+    const nlen = dv.getUint16(p + 28, true);
+    const elen = dv.getUint16(p + 30, true);
+    const clen = dv.getUint16(p + 32, true);
+    const lfh = dv.getUint32(p + 42, true);
+    const ename = new TextDecoder().decode(buf.subarray(p + 46, p + 46 + nlen));
+    out.push({name: ename, dir: ename.endsWith('/'), size: usize, method, csize, lfh});
+    p += 46 + nlen + elen + clen;
+  }
+  return out;
+}
+async function inflateRaw(data) {
+  const ds = new DecompressionStream('deflate-raw');
+  const stream = new Blob([data]).stream().pipeThrough(ds);
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function previewZipEntry(name, orig, en, buf) {
+  const body = document.getElementById('vbody');
+  const start = en.lfh + 30;
+  const nlen = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint16(en.lfh + 26, true);
+  const elen = new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint16(en.lfh + 28, true);
+  const dataStart = start + nlen + elen;
+  const raw = buf.subarray(dataStart, dataStart + en.csize);
+  const data = en.method === 0 ? new Uint8Array(raw) : await inflateRaw(raw);
+  const k = kindOf(en.name);
+  if (k === 'img') {
+    const blob = new Blob([data], {type: 'image/' + extOf(en.name)});
+    body.innerHTML = '<div class="stage"><img id="vimg" src="' + URL.createObjectURL(blob) + '" alt="' + esc(en.name) + '"></div>' +
+      '<div class="hint" style="margin-top:10px">zip 內的圖片（' + esc(en.name) + '）</div>';
+  } else if (TEXT_KINDS.has(k) || k === 'bin' && data.length < 1024 * 1024) {
+    const text = new TextDecoder().decode(data);
+    const isMd = k === 'md';
+    const lines = text.split('\n').length;
+    const nums = Array.from({length: lines}, (_, i) => i + 1).join('\n');
+    body.innerHTML =
+      '<div class="vbar" style="margin-top:0"><button id="zBack">← 回到 zip 清單</button><span class="vname">' + esc(en.name) + '</span></div>' +
+      (isMd ? '<div class="md">' + renderMD(text) + '</div>'
+            : '<div class="code-scroll"><div class="code-inner"><div class="gutter">' + nums + '</div><pre class="code"><code>' + highlight(text, en.name) + '</code></pre></div></div>');
+    document.getElementById('zBack').addEventListener('click', () => viewZip(name, orig, document.getElementById('vbody')));
+  } else {
+    const blob = new Blob([data]);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = en.name.split('/').pop();
+    document.body.appendChild(a); a.click(); a.remove();
+    toast('zip 內此類型不支援預覽，已下載');
+  }
+}
+
+// ── editor ───────────────────────────────────────────────────────────
+async function showEditor(name) {
+  let meta = lastFiles.find(f => f.name === name);
+  if (!meta) {
+    try {
+      const list = await (await fetch('/files')).json();
+      lastFiles = list;
+      meta = list.find(f => f.name === name);
+    } catch (e) {}
+  }
+  const orig = (meta && meta.orig) || name;
+  const kind = kindOf(name);
+  if (!TEXT_KINDS.has(kind)) {
+    location.href = viewUrl(name);
+    return;
+  }
+  let text;
+  try {
+    text = await fetchText(name);
+  } catch (e) {
+    $app.innerHTML = '<div class="vbar"><button id="back">← 檔案清單</button></div><div class="stage"><div class="fallback">讀取失敗：' + esc(e.message) + '</div></div>';
+    document.getElementById('back').addEventListener('click', () => history.back());
+    return;
+  }
+  if (text.length > 2 * 1024 * 1024) {
+    $app.innerHTML = '<div class="vbar"><button id="back">← 檔案清單</button></div><div class="stage"><div class="fallback"><div class="big">檔案超過 2MB</div>為保持流暢不開放編輯，請下載開啟</div></div>';
+    document.getElementById('back').addEventListener('click', () => history.back());
+    return;
+  }
+
+  const isMd = kind === 'md';
+  $app.innerHTML =
+    '<div class="edbar">' +
+    '<button id="back">← 檔案清單</button>' +
+    '<span class="ename" title="' + esc(orig) + '">編輯：' + esc(orig) + '</span>' +
+    '<span class="edstate" id="edState">未更動</span>' +
+    '<span class="edops">' +
+    '<button id="edCancel">取消</button>' +
+    '<button id="edSave" class="primary">另存新檔</button>' +
+    '</span></div>' +
+    (isMd
+      ? '<div class="ed-split">' +
+        '<div class="ed-pane"><div class="pane-h">編輯</div>' + edBox() + '</div>' +
+        '<div class="ed-pane"><div class="pane-h">預覽</div><div class="ed-preview md" id="edPrev"></div></div>' +
+        '</div>'
+      : '<div class="ed-pane">' + edBox() + '</div>');
+
+  function edBox() {
+    return '<div class="ed-box"><div class="ed-gutter"><div id="edNums"></div></div>' +
+      '<textarea class="ed" id="edTa" spellcheck="false" wrap="off"></textarea></div>';
+  }
+
+  const ta = document.getElementById('edTa');
+  const nums = document.getElementById('edNums');
+  const state = document.getElementById('edState');
+  ta.value = text;
+
+  function refreshNums() {
+    const n = ta.value.split('\n').length;
+    nums.innerHTML = Array.from({length: n}, (_, i) => i + 1).join('\n');
+    nums.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)';
+  }
+  refreshNums();
+  ta.addEventListener('scroll', () => { nums.style.transform = 'translateY(' + (-ta.scrollTop) + 'px)'; });
+  ta.addEventListener('input', () => {
+    refreshNums();
+    state.textContent = '未儲存';
+    state.classList.add('dirty');
+    if (isMd) document.getElementById('edPrev').innerHTML = renderMD(ta.value) || '<p style="color:var(--text-muted)">（空）</p>';
+  });
+  ta.addEventListener('keydown', e => {
+    if (e.key === 'Tab') {
+      e.preventDefault();
+      const s = ta.selectionStart, epos = ta.selectionEnd;
+      ta.value = ta.value.slice(0, s) + '  ' + ta.value.slice(epos);
+      ta.selectionStart = ta.selectionEnd = s + 2;
+      ta.dispatchEvent(new Event('input'));
+    }
+  });
+  if (isMd) document.getElementById('edPrev').innerHTML = renderMD(text) || '<p style="color:var(--text-muted)">（空）</p>';
+
+  document.getElementById('back').addEventListener('click', () => history.back());
+  document.getElementById('edCancel').addEventListener('click', () => history.back());
+  document.getElementById('edSave').addEventListener('click', async () => {
+    const btn = document.getElementById('edSave');
+    btn.disabled = true;
+    btn.textContent = '儲存中…';
+    try {
+      const base = orig.replace(/\.[^.]+$/, '');
+      const ext = extOf(orig) || 'txt';
+      const newName = base + '_edited.' + ext;
+      const blob = new Blob([ta.value], {type: 'text/plain;charset=utf-8'});
+      const r = await fetch('/upload?name=' + encodeURIComponent(newName), {method: 'POST', body: blob});
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const data = await r.json();
+      state.textContent = '已另存';
+      state.classList.remove('dirty');
+      showSaved(data.url, newName);
+    } catch (e) {
+      toast('儲存失敗：' + e.message);
+      btn.disabled = false;
+      btn.textContent = '另存新檔';
+    }
+  });
+}
+
+// ── boot ─────────────────────────────────────────────────────────────
+route();
 </script>
 </body>
 </html>
@@ -316,8 +1104,10 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
-    def _serve_file(self, name: str):
-        """伺服單一檔案（LAN 與公網共用）。name 已 basename（防路徑穿越）。"""
+    def _serve_file(self, name: str, mode: str = 'default'):
+        """伺服單一檔案。name 已 basename（防路徑穿越）。
+        mode: default = 圖片內嵌、其餘強制下載；inline = 內嵌顯示（瀏覽器內建 PDF viewer 用）；
+              download = 一律強制下載。"""
         if name.endswith('.orig'):
             self._send(404, 'not found')  # sidecar 不對外開放
             return
@@ -325,9 +1115,10 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.isfile(fp):
             ctype = mimetypes.guess_type(name)[0] or 'application/octet-stream'
             disposition = None
-            if not ctype.startswith('image/'):
-                # 圖片維持內嵌顯示（markdown 用途）；其餘類型一律強制下載並還原原始檔名
-                # （文字類瀏覽器會內嵌顯示，octet-stream/pdf 等也一併下載並帶正確檔名）
+            if mode == 'inline':
+                disposition = 'inline'
+            elif mode == 'download' or not ctype.startswith('image/'):
+                # 強制下載並還原原始檔名（非圖片預設如此；圖片預設內嵌供 markdown 使用）
                 disp_name = _read_orig_name(fp) or name
                 disposition = _content_disposition(disp_name)
             with open(fp, 'rb') as f:
@@ -335,9 +1126,11 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, 'not found')
 
-    def _list_files(self):
-        """已上傳檔案清單（排除 .orig sidecar），依時間新到舊，上限 100 筆。"""
+    def _list_files(self, q: str = ''):
+        """已上傳檔案清單（排除 .orig sidecar），依時間新到舊，上限 100 筆。
+        q = 名稱搜尋（uuid 檔名或原始檔名任一符合）。"""
         items = []
+        ql = q.strip().lower()
         try:
             names = os.listdir(self.server.dir)
         except OSError:
@@ -352,9 +1145,12 @@ class Handler(BaseHTTPRequestHandler):
                 st = os.stat(fp)
             except OSError:
                 continue
+            orig = _read_orig_name(fp) or name
+            if ql and ql not in name.lower() and ql not in orig.lower():
+                continue
             items.append({
                 'name': name,
-                'orig': _read_orig_name(fp) or name,
+                'orig': orig,
                 'size': st.st_size,
                 'mtime': int(st.st_mtime),
             })
@@ -368,12 +1164,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == '/health':
             self._send(200, json.dumps({'ok': True}))
-        elif path == '/':
+        elif path == '/' or path.startswith('/view/') or path.startswith('/edit/'):
+            # SPA：檢視器/編輯器是前端路由，伺服器回同一頁，由 JS 讀 pathname 分派
             self._send(200, FRONTEND_HTML, 'text/html; charset=utf-8')
         elif path == '/files':
-            self._send(200, json.dumps(self._list_files(), ensure_ascii=False))
+            qs = parse_qs(urlparse(self.path).query)
+            q = (qs.get('q') or [''])[0].strip()
+            self._send(200, json.dumps(self._list_files(q), ensure_ascii=False))
         elif path.startswith('/files/'):
-            self._serve_file(os.path.basename(path))
+            qs = parse_qs(urlparse(self.path).query)
+            mode = (qs.get('mode') or ['default'])[0]
+            if mode not in ('default', 'inline', 'download'):
+                mode = 'default'
+            self._serve_file(os.path.basename(path), mode)
         else:
             self._send(404, 'not found')
 
