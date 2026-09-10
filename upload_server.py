@@ -54,7 +54,12 @@ FRONTEND_HTML = r"""<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Meow File Share</title>
-<link rel="icon" href="data:,">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="48x48" href="/favicon-48.png">
+<link rel="icon" type="image/png" sizes="64x64" href="/favicon-64.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
 <style>
 :root{
   --bg-canvas:#09090b; --bg-surface:#131316; --bg-elevated:#1c1c21; --bg-raised:#26262c;
@@ -886,6 +891,12 @@ function viewImage(name, orig, body) {
     '<div class="atool">' +
     '<button id="aToggle" class="wbtn">標註</button>' +
     '<span style="width:1px;height:18px;background:var(--border-default)"></span>' +
+    '<button class="wbtn on" data-tool="pen" title="自由畫筆">畫筆</button>' +
+    '<button class="wbtn" data-tool="rect" title="拖出方框">方框</button>' +
+    '<button class="wbtn" data-tool="ellipse" title="拖出圓圈">圓圈</button>' +
+    '<button class="wbtn" data-tool="arrow" title="拖出箭頭">箭頭</button>' +
+    '<button class="wbtn" data-tool="select" title="選取：拖動移動、拉角點調大小">選取</button>' +
+    '<span style="width:1px;height:18px;background:var(--border-default)"></span>' +
     '<span class="swatch on" data-color="#ff5252" style="background:#ff5252" title="紅"></span>' +
     '<span class="swatch" data-color="#ffd60a" style="background:#ffd60a" title="黃"></span>' +
     '<span class="swatch" data-color="#34d399" style="background:#34d399" title="綠"></span>' +
@@ -895,6 +906,8 @@ function viewImage(name, orig, body) {
     '<button class="wbtn on" data-w="1">細</button>' +
     '<button class="wbtn" data-w="2">中</button>' +
     '<button class="wbtn" data-w="3">粗</button>' +
+    '<span style="width:1px;height:18px;background:var(--border-default)"></span>' +
+    '<button class="wbtn" id="aDelete" title="刪除選取的形狀">刪除</button>' +
     '<button class="wbtn" id="aClear">清除</button>' +
     '</div></div>';
 
@@ -974,13 +987,23 @@ function viewImage(name, orig, body) {
   });
   document.getElementById('fFit').addEventListener('click', () => { S.scale = 1; S.tx = 0; S.ty = 0; apply(); });
 
-  // ── annotation (drawing on image) ──
-  const A = { on: false, color: '#ff5252', w: 1, drawing: false, last: null, dirty: false };
+  // ── annotation (drawing + shapes on image) ──
+  const A = {
+    on: false, color: '#ff5252', w: 1,
+    tool: 'pen',        // 'pen' | 'rect' | 'ellipse' | 'arrow' | 'select'
+    shapes: [],         // committed shapes (image/canvas coordinates)
+    cur: null,          // shape being drawn
+    sel: null,          // selected shape
+    action: null,       // null | 'draw' | 'move' | 'resize'
+    start: null,        // draw start point
+    grab: null,         // last pointer point (for move)
+    handle: -1,         // handle index being resized
+  };
   function sizeAnnot() {
     if (!img.naturalWidth) return;
     annot.width = img.naturalWidth;
     annot.height = img.naturalHeight;
-    A.dirty = false;
+    renderShapes();
   }
   if (img.complete) sizeAnnot();
   else img.addEventListener('load', sizeAnnot);
@@ -988,40 +1011,194 @@ function viewImage(name, orig, body) {
     const base = Math.max(2, img.naturalWidth * 0.0015);
     return [base, base * 2, base * 4][A.w - 1];
   }
-  // screen point -> image (canvas) coordinates, via inverse of the element transform
+  // screen point -> image (canvas) coordinates.
+  // The canvas is statically positioned at the stage CENTER (left:50%, top:50%),
+  // so the reference point is the stage center, not the stage top-left.
   function toAnnot(e) {
     const sr = stage.getBoundingClientRect();
     const m = new DOMMatrix(getComputedStyle(annot).transform);
-    return new DOMPoint(e.clientX - sr.left, e.clientY - sr.top).matrixTransform(m.inverse());
+    const S = { x: sr.left + sr.width / 2, y: sr.top + sr.height / 2 };
+    return new DOMPoint(e.clientX - S.x, e.clientY - S.y).matrixTransform(m.inverse());
+  }
+  function drawShape(ctx, s) {
+    ctx.strokeStyle = s.color;
+    ctx.lineWidth = s.width;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    if (s.type === 'pen') {
+      if (s.points.length < 2) {
+        ctx.fillStyle = s.color;
+        ctx.beginPath();
+        ctx.arc(s.points[0].x, s.points[0].y, s.width / 2, 0, Math.PI * 2);
+        ctx.fill();
+        return;
+      }
+      ctx.beginPath();
+      s.points.forEach((p, i) => i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y));
+      ctx.stroke();
+    } else if (s.type === 'rect') {
+      ctx.strokeRect(s.x, s.y, s.w, s.h);
+    } else if (s.type === 'ellipse') {
+      ctx.beginPath();
+      ctx.ellipse(s.x + s.w / 2, s.y + s.h / 2, Math.abs(s.w / 2), Math.abs(s.h / 2), 0, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (s.type === 'arrow') {
+      ctx.beginPath();
+      ctx.moveTo(s.x1, s.y1);
+      ctx.lineTo(s.x2, s.y2);
+      ctx.stroke();
+      const ang = Math.atan2(s.y2 - s.y1, s.x2 - s.x1);
+      const hl = Math.max(10, s.width * 4);
+      ctx.beginPath();
+      ctx.moveTo(s.x2, s.y2);
+      ctx.lineTo(s.x2 - hl * Math.cos(ang - Math.PI / 6), s.y2 - hl * Math.sin(ang - Math.PI / 6));
+      ctx.moveTo(s.x2, s.y2);
+      ctx.lineTo(s.x2 - hl * Math.cos(ang + Math.PI / 6), s.y2 - hl * Math.sin(ang + Math.PI / 6));
+      ctx.stroke();
+    }
+  }
+  function handlesOf(s) {
+    if (s.type === 'rect' || s.type === 'ellipse')
+      return [[s.x, s.y], [s.x + s.w, s.y], [s.x, s.y + s.h], [s.x + s.w, s.y + s.h]];
+    if (s.type === 'arrow') return [[s.x1, s.y1], [s.x2, s.y2]];
+    return [];
+  }
+  function drawHandles(ctx, s) {
+    const r = Math.max(4, s.width);
+    for (const [hx, hy] of handlesOf(s)) {
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = s.color;
+      ctx.lineWidth = 2;
+      ctx.fillRect(hx - r, hy - r, r * 2, r * 2);
+      ctx.strokeRect(hx - r, hy - r, r * 2, r * 2);
+    }
+  }
+  function renderShapes() {
+    actx.clearRect(0, 0, annot.width, annot.height);
+    for (const s of A.shapes) drawShape(actx, s);
+    if (A.cur) drawShape(actx, A.cur);
+    if (A.sel) drawHandles(actx, A.sel);
+  }
+  function distToSeg(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1, l2 = dx * dx + dy * dy;
+    if (!l2) return Math.hypot(px - x1, py - y1);
+    const t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / l2));
+    return Math.hypot(px - (x1 + t * dx), py - (y1 + t * dy));
+  }
+  function hitShape(s, p) {
+    const tol = Math.max(6, s.width);
+    if (s.type === 'pen') {
+      for (let i = 1; i < s.points.length; i++)
+        if (distToSeg(p.x, p.y, s.points[i-1].x, s.points[i-1].y, s.points[i].x, s.points[i].y) <= tol) return true;
+      return false;
+    }
+    if (s.type === 'rect')
+      return p.x >= s.x - tol && p.x <= s.x + s.w + tol && p.y >= s.y - tol && p.y <= s.y + s.h + tol;
+    if (s.type === 'ellipse') {
+      const rx = Math.abs(s.w / 2) + tol, ry = Math.abs(s.h / 2) + tol;
+      return ((p.x - s.x - s.w/2) / rx) ** 2 + ((p.y - s.y - s.h/2) / ry) ** 2 <= 1;
+    }
+    if (s.type === 'arrow') return distToSeg(p.x, p.y, s.x1, s.y1, s.x2, s.y2) <= tol;
+    return false;
+  }
+  function hitHandle(s, p) {
+    const r = Math.max(8, s.width * 2);
+    const hs = handlesOf(s);
+    for (let i = 0; i < hs.length; i++)
+      if (Math.hypot(p.x - hs[i][0], p.y - hs[i][1]) <= r) return i;
+    return -1;
+  }
+  function moveShape(s, dx, dy) {
+    if (s.type === 'pen') s.points.forEach(p => { p.x += dx; p.y += dy; });
+    else if (s.type === 'rect' || s.type === 'ellipse') { s.x += dx; s.y += dy; }
+    else if (s.type === 'arrow') { s.x1 += dx; s.y1 += dy; s.x2 += dx; s.y2 += dy; }
+  }
+  function resizeShape(s, hi, p) {
+    if (s.type === 'rect' || s.type === 'ellipse') {
+      const x0 = s.x, y0 = s.y, x1 = s.x + s.w, y1 = s.y + s.h;
+      let nx = x0, ny = y0, nx1 = x1, ny1 = y1;
+      if (hi === 0) { nx = p.x; ny = p.y; }
+      else if (hi === 1) { nx1 = p.x; ny = p.y; }
+      else if (hi === 2) { nx = p.x; ny1 = p.y; }
+      else { nx1 = p.x; ny1 = p.y; }
+      s.x = Math.min(nx, nx1); s.y = Math.min(ny, ny1);
+      s.w = Math.abs(nx1 - nx); s.h = Math.abs(ny1 - ny);
+    } else if (s.type === 'arrow') {
+      if (hi === 0) { s.x1 = p.x; s.y1 = p.y; }
+      else { s.x2 = p.x; s.y2 = p.y; }
+    }
   }
   annot.addEventListener('pointerdown', e => {
     if (!A.on) return;
     e.preventDefault();
     e.stopPropagation();
-    A.drawing = true;
-    A.last = toAnnot(e);
-    actx.strokeStyle = A.color;
-    actx.fillStyle = A.color;
-    actx.lineWidth = lineW();
-    actx.lineCap = 'round';
-    actx.lineJoin = 'round';
+    const p = toAnnot(e);
     try { annot.setPointerCapture(e.pointerId); } catch (_) {}
-    actx.beginPath();
-    actx.arc(A.last.x, A.last.y, actx.lineWidth / 2, 0, Math.PI * 2);
-    actx.fill();
-    A.dirty = true;
+    if (A.tool === 'select') {
+      if (A.sel && hitHandle(A.sel, p) >= 0) {
+        A.action = 'resize';
+        A.handle = hitHandle(A.sel, p);
+        return;
+      }
+      for (let i = A.shapes.length - 1; i >= 0; i--) {
+        if (hitShape(A.shapes[i], p)) {
+          A.sel = A.shapes[i];
+          A.action = 'move';
+          A.grab = p;
+          renderShapes();
+          return;
+        }
+      }
+      A.sel = null;
+      renderShapes();
+      return;
+    }
+    // drawing tools
+    A.action = 'draw';
+    A.start = p;
+    const w = lineW();
+    if (A.tool === 'pen') A.cur = { type: 'pen', points: [p], color: A.color, width: w };
+    else if (A.tool === 'rect') A.cur = { type: 'rect', x: p.x, y: p.y, w: 0, h: 0, color: A.color, width: w };
+    else if (A.tool === 'ellipse') A.cur = { type: 'ellipse', x: p.x, y: p.y, w: 0, h: 0, color: A.color, width: w };
+    else if (A.tool === 'arrow') A.cur = { type: 'arrow', x1: p.x, y1: p.y, x2: p.x, y2: p.y, color: A.color, width: w };
+    A.sel = null;
+    renderShapes();
   });
   annot.addEventListener('pointermove', e => {
-    if (!A.drawing) return;
+    if (!A.on || !A.action) return;
     const p = toAnnot(e);
-    actx.beginPath();
-    actx.moveTo(A.last.x, A.last.y);
-    actx.lineTo(p.x, p.y);
-    actx.stroke();
-    A.last = p;
+    if (A.action === 'draw' && A.cur) {
+      if (A.cur.type === 'pen') A.cur.points.push(p);
+      else if (A.cur.type === 'rect' || A.cur.type === 'ellipse') {
+        A.cur.x = Math.min(A.start.x, p.x);
+        A.cur.y = Math.min(A.start.y, p.y);
+        A.cur.w = Math.abs(p.x - A.start.x);
+        A.cur.h = Math.abs(p.y - A.start.y);
+      } else if (A.cur.type === 'arrow') { A.cur.x2 = p.x; A.cur.y2 = p.y; }
+      renderShapes();
+    } else if (A.action === 'move' && A.sel) {
+      moveShape(A.sel, p.x - A.grab.x, p.y - A.grab.y);
+      A.grab = p;
+      renderShapes();
+    } else if (A.action === 'resize' && A.sel) {
+      resizeShape(A.sel, A.handle, p);
+      renderShapes();
+    }
   });
-  ['pointerup','pointercancel'].forEach(ev =>
-    annot.addEventListener(ev, () => { A.drawing = false; }));
+  ['pointerup','pointercancel'].forEach(ev => annot.addEventListener(ev, () => {
+    if (A.action === 'draw' && A.cur) {
+      const s = A.cur;
+      let ok = false;
+      if (s.type === 'pen') ok = s.points.length > 2;
+      else if (s.type === 'rect' || s.type === 'ellipse') ok = s.w > 4 && s.h > 4;
+      else if (s.type === 'arrow') ok = Math.hypot(s.x2 - s.x1, s.y2 - s.y1) > 6;
+      if (ok) A.shapes.push(s);
+      A.cur = null;
+    }
+    A.action = null;
+    A.handle = -1;
+    renderShapes();
+  }));
   document.getElementById('aToggle').addEventListener('click', function () {
     A.on = !A.on;
     this.classList.toggle('on', A.on);
@@ -1035,9 +1212,22 @@ function viewImage(name, orig, body) {
     A.w = +b.dataset.w;
     document.querySelectorAll('#ftool .wbtn[data-w]').forEach(x => x.classList.toggle('on', x === b));
   }));
+  document.querySelectorAll('#ftool .wbtn[data-tool]').forEach(b => b.addEventListener('click', () => {
+    A.tool = b.dataset.tool;
+    document.querySelectorAll('#ftool .wbtn[data-tool]').forEach(x => x.classList.toggle('on', x === b));
+  }));
+  document.getElementById('aDelete').addEventListener('click', () => {
+    if (A.sel) {
+      A.shapes.splice(A.shapes.indexOf(A.sel), 1);
+      A.sel = null;
+      renderShapes();
+    }
+  });
   document.getElementById('aClear').addEventListener('click', () => {
-    actx.clearRect(0, 0, annot.width, annot.height);
-    A.dirty = false;
+    A.shapes = [];
+    A.sel = null;
+    A.cur = null;
+    renderShapes();
   });
 
   // export as new copy via canvas
@@ -1055,7 +1245,12 @@ function viewImage(name, orig, body) {
       ctx.rotate(S.rot * Math.PI/180);
       ctx.scale(S.fh ? -1 : 1, S.fv ? -1 : 1);
       ctx.drawImage(img, -w/2, -h/2);
-      if (A.dirty) ctx.drawImage(annot, -w/2, -h/2);
+      if (A.shapes.length) {
+        ctx.save();
+        ctx.translate(-w/2, -h/2);
+        for (const s of A.shapes) drawShape(ctx, s);
+        ctx.restore();
+      }
       const isJpeg = /jpe?g/i.test(extOf(orig));
       const blob = await new Promise(res =>
         canvas.toBlob(res, isJpeg ? 'image/jpeg' : 'image/png', 0.92));
@@ -1371,6 +1566,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, 'not found')
 
+    def _serve_favicon(self, path):
+        """伺服 favicon（SVG + 各尺寸 PNG），檔放在腳本同目錄。"""
+        name = os.path.basename(path)
+        fp = os.path.join(os.path.dirname(os.path.abspath(__file__)), name)
+        if os.path.isfile(fp):
+            ctype = 'image/svg+xml' if name.endswith('.svg') else 'image/png'
+            with open(fp, 'rb') as f:
+                self._send(200, f.read(), ctype)
+        else:
+            self._send(404, 'not found')
+
     def _list_files(self, q: str = ''):
         """已上傳檔案清單（排除 .orig sidecar），依時間新到舊，上限 100 筆。
         q = 名稱搜尋（uuid 檔名或原始檔名任一符合）。"""
@@ -1422,6 +1628,9 @@ class Handler(BaseHTTPRequestHandler):
             if mode not in ('default', 'inline', 'download'):
                 mode = 'default'
             self._serve_file(os.path.basename(path), mode)
+        elif path in ('/favicon.svg', '/favicon-16.png', '/favicon-32.png',
+                      '/favicon-48.png', '/favicon-64.png', '/apple-touch-icon.png'):
+            self._serve_favicon(path)
         else:
             self._send(404, 'not found')
 
