@@ -139,12 +139,12 @@ a.open{color:var(--accent);font-size:11px;margin-left:6px}
   padding:1px 6px;border-radius:4px;margin-right:8px;vertical-align:1px;
   background:var(--bg-raised);color:var(--text-secondary);letter-spacing:.5px;
 }
-.badge.img{color:#7dd3fc;background:rgba(125,211,252,.12)}
-.badge.vid{color:#c4b5fd;background:rgba(196,181,253,.12)}
-.badge.aud{color:#f9a8d4;background:rgba(249,168,212,.12)}
-.badge.pdf{color:#fca5a5;background:rgba(252,165,165,.12)}
-.badge.md{color:var(--accent);background:var(--accent-dim)}
-.badge.zip{color:var(--warn);background:rgba(251,191,36,.12)}
+.badge.b-img{color:#7dd3fc;background:rgba(125,211,252,.12)}
+.badge.b-vid{color:#c4b5fd;background:rgba(196,181,253,.12)}
+.badge.b-aud{color:#f9a8d4;background:rgba(249,168,212,.12)}
+.badge.b-pdf{color:#fca5a5;background:rgba(252,165,165,.12)}
+.badge.b-md{color:var(--accent);background:var(--accent-dim)}
+.badge.b-zip{color:var(--warn);background:rgba(251,191,36,.12)}
 /* ── viewer ── */
 .vbar{display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap}
 .vbar .back{padding:4px 10px}
@@ -223,7 +223,7 @@ pre.code{margin:0;padding:14px 18px;font-family:var(--mono);font-size:12.5px;lin
 .ed-gutter{
   flex:none;overflow:hidden;text-align:right;padding:14px 10px;user-select:none;
   color:var(--text-muted);background:rgba(255,255,255,.02);border-right:1px solid var(--border-subtle);
-  font-family:var(--mono);font-size:12.5px;line-height:1.65;
+  font-family:var(--mono);font-size:12.5px;line-height:1.65;white-space:pre;
 }
 .ed-gutter>div{will-change:transform}
 textarea.ed{
@@ -242,6 +242,50 @@ textarea.ed{
   transition:opacity .2s ease-out,transform .2s ease-out;z-index:50;
 }
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* ── list toolbar ── */
+.lbar{display:flex;align-items:center;gap:10px;margin-bottom:10px;flex-wrap:wrap}
+.lbar .lmeta{font-size:11px;color:var(--text-muted)}
+.lbar select{
+  background:var(--bg-surface);color:var(--text-primary);border:1px solid var(--border-default);
+  border-radius:6px;padding:4px 8px;font-size:12px;font-family:inherit;cursor:pointer;
+}
+.chip{
+  background:var(--bg-surface);border:1px solid var(--border-default);color:var(--text-secondary);
+  border-radius:9999px;padding:3px 12px;font-size:11px;cursor:pointer;
+  transition:background .15s ease-out,color .15s ease-out,border-color .15s ease-out;
+}
+.chip:hover{background:var(--bg-elevated)}
+.chip.on{background:var(--accent-dim);border-color:rgba(52,211,153,.4);color:var(--accent)}
+.vt{display:flex;border:1px solid var(--border-default);border-radius:6px;overflow:hidden}
+.vt button{border:none;border-radius:none;padding:4px 10px;font-size:11px;background:var(--bg-surface)}
+.vt button.on{background:var(--accent-dim);color:var(--accent)}
+.expiry{font-size:11px;color:var(--text-muted);white-space:nowrap}
+.expiry.soon{color:var(--warn)}
+/* grid view */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px}
+.tile{
+  background:var(--bg-surface);border:1px solid var(--border-subtle);border-radius:var(--radius);
+  overflow:hidden;cursor:pointer;transition:border-color .15s ease-out,background .15s ease-out;
+}
+.tile:hover{border-color:var(--border-default);background:var(--bg-elevated)}
+.tile .thumb{height:104px;background:var(--bg-canvas);display:flex;align-items:center;justify-content:center;overflow:hidden}
+.tile .thumb img{width:100%;height:100%;object-fit:cover;display:block}
+.tile .thumb .tbadge{font-family:var(--mono);font-size:15px;font-weight:700;color:var(--text-muted);letter-spacing:1px}
+.tile .tinfo{padding:8px 10px}
+.tile .tname{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tile .tmeta{font-size:10.5px;color:var(--text-muted);margin-top:2px;display:flex;justify-content:space-between;gap:6px}
+/* ── image annotation ── */
+.stage canvas.annot{position:absolute;left:50%;top:50%;pointer-events:none}
+.stage canvas.annot.on{pointer-events:auto;cursor:crosshair}
+.atool{display:flex;align-items:center;gap:10px;flex-wrap:wrap;width:100%;margin-top:4px;padding-top:10px;border-top:1px solid var(--border-subtle)}
+.swatch{
+  width:20px;height:20px;border-radius:50%;border:2px solid transparent;cursor:pointer;
+  transition:transform .1s ease-out,border-color .15s ease-out;flex:none;
+}
+.swatch:hover{transform:scale(1.15)}
+.swatch.on{border-color:var(--text-primary)}
+.wbtn{padding:3px 9px;font-size:11px}
+.wbtn.on{background:var(--accent-dim);border-color:rgba(52,211,153,.4);color:var(--accent)}
 @media (max-width:760px){
   .ed-split{flex-direction:column}
   .vbar .vname{max-width:60vw}
@@ -331,7 +375,7 @@ function kindOf(name) {
 function badgeOf(name) {
   const k = kindOf(name), e = extOf(name);
   const label = {img:'IMG',vid:'VID',aud:'AUD',pdf:'PDF',md:'MD',zip:'ZIP',code:e.toUpperCase().slice(0,4)}[k] || 'BIN';
-  return {label, cls: k === 'code' ? '' : k};
+  return {label, cls: k === 'code' ? '' : 'b-' + k};
 }
 const TEXT_KINDS = new Set(['md','code']);
 
@@ -346,27 +390,85 @@ window.addEventListener('popstate', route);
 
 // ── list view ────────────────────────────────────────────────────────
 let lastFiles = [];
+const LS_STATE = {q:'', type:'all', sort:'new', latest:false, view:'list'};
+const TYPE_CHIPS = [
+  ['all','全部'], ['md','MD'], ['img','圖片'], ['txt','文字'],
+  ['media','影音'], ['pdf','PDF'], ['zip','ZIP'], ['other','其他'],
+];
+function typeMatch(kind) {
+  switch (LS_STATE.type) {
+    case 'all': return true;
+    case 'md': return kind === 'md';
+    case 'img': return kind === 'img';
+    case 'txt': return kind === 'code';
+    case 'media': return kind === 'vid' || kind === 'aud';
+    case 'pdf': return kind === 'pdf';
+    case 'zip': return kind === 'zip';
+    case 'other': return kind === 'bin';
+  }
+  return true;
+}
+function expiryOf(mtime) {
+  const left = Math.ceil((mtime + 7 * 86400 - Date.now() / 1000) / 86400);
+  return left <= 1 ? {text:'即將刪除', soon:true} : {text:'剩 ' + left + ' 天', soon:false};
+}
 async function showList() {
   $app.innerHTML =
     '<header><h1>Meow File Share</h1>' +
-    '<input class="search" id="q" type="search" placeholder="搜尋檔案名稱…" autocomplete="off"></header>' +
+    '<input class="search" id="q" type="search" placeholder="搜尋檔案名稱…（按 / 聚焦）" autocomplete="off" value="' + esc(LS_STATE.q) + '"></header>' +
     '<div class="drop" id="drop">' +
     '<div class="big">把檔案拖進來，或點這裡選擇</div>' +
     '<div class="small">單檔最大 1GB · 限家庭網路 · 7 天後自動刪除</div>' +
     '<input type="file" id="file" multiple hidden></div>' +
     '<div class="queue" id="queue"></div>' +
+    '<div class="lbar">' +
+    '<span class="lmeta" id="lmeta"></span>' +
+    '<span style="flex:1"></span>' +
+    '<button class="chip" id="latestChip" title="同一個原始檔名只顯示最新一版">只看最新</button>' +
+    '<select id="sortSel" title="排序方式">' +
+    '<option value="new">最新</option><option value="old">最舊</option>' +
+    '<option value="name">名稱</option><option value="size">大小</option></select>' +
+    '<span class="vt"><button id="viewList" title="清單檢視">清單</button><button id="viewGrid" title="格狀檢視">格狀</button></span>' +
+    '</div>' +
+    '<div class="lbar" id="chips">' + TYPE_CHIPS.map(c =>
+      '<button class="chip" data-type="' + c[0] + '">' + c[1] + '</button>').join('') + '</div>' +
     '<h2>檔案 <span class="count" id="count"></span></h2>' +
-    '<div class="card"><table>' +
-    '<thead><tr><th>檔案</th><th>大小</th><th>時間</th><th></th></tr></thead>' +
-    '<tbody id="rows"></tbody></table>' +
-    '<div class="empty" id="empty" style="display:none">尚無檔案</div></div>';
+    '<div id="listWrap"></div>';
 
   const q = document.getElementById('q');
   let deb = null;
   q.addEventListener('input', () => {
     clearTimeout(deb);
-    deb = setTimeout(() => loadFiles(q.value.trim()), 200);
+    deb = setTimeout(() => { LS_STATE.q = q.value.trim(); loadFiles(); }, 200);
   });
+  document.getElementById('latestChip').addEventListener('click', function () {
+    LS_STATE.latest = !LS_STATE.latest;
+    this.classList.toggle('on', LS_STATE.latest);
+    applyList();
+  });
+  document.getElementById('sortSel').addEventListener('change', function () {
+    LS_STATE.sort = this.value; applyList();
+  });
+  document.getElementById('viewList').addEventListener('click', () => setView('list'));
+  document.getElementById('viewGrid').addEventListener('click', () => setView('grid'));
+  document.querySelectorAll('#chips .chip').forEach(ch =>
+    ch.addEventListener('click', () => {
+      LS_STATE.type = ch.dataset.type;
+      document.querySelectorAll('#chips .chip').forEach(c => c.classList.toggle('on', c === ch));
+      applyList();
+    }));
+  if (!window.__listKeysBound) {
+    window.__listKeysBound = true;
+    document.addEventListener('keydown', e => {
+      const si = document.getElementById('q');
+      if (!si) return;
+      if (e.key === '/' && document.activeElement !== si &&
+          !/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) {
+        e.preventDefault(); si.focus();
+      }
+    });
+  }
+
   const drop = document.getElementById('drop'), fi = document.getElementById('file');
   drop.addEventListener('click', () => fi.click());
   fi.addEventListener('change', () => { for (const f of fi.files) upload(f); fi.value = ''; });
@@ -376,29 +478,87 @@ async function showList() {
     drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
   drop.addEventListener('drop', e => { for (const f of e.dataTransfer.files) upload(f); });
 
-  await loadFiles('');
+  // restore control state
+  document.getElementById('latestChip').classList.toggle('on', LS_STATE.latest);
+  document.getElementById('sortSel').value = LS_STATE.sort;
+  document.querySelectorAll('#chips .chip').forEach(c =>
+    c.classList.toggle('on', c.dataset.type === LS_STATE.type));
+  setView(LS_STATE.view);
+  await loadFiles();
 }
-
-async function loadFiles(query) {
+function setView(v) {
+  LS_STATE.view = v;
+  document.getElementById('viewList').classList.toggle('on', v === 'list');
+  document.getElementById('viewGrid').classList.toggle('on', v === 'grid');
+  applyList();
+}
+async function loadFiles() {
   let list;
   try {
-    list = await (await fetch('/files' + (query ? '?q=' + encodeURIComponent(query) : ''))).json();
+    list = await (await fetch('/files' + (LS_STATE.q ? '?q=' + encodeURIComponent(LS_STATE.q) : ''))).json();
   } catch (e) { return; }
   lastFiles = list;
-  const tb = document.getElementById('rows');
-  if (!tb) return;
-  tb.innerHTML = '';
-  document.getElementById('empty').style.display = list.length ? 'none' : 'block';
+  applyList();
+}
+function filteredFiles() {
+  let list = lastFiles.filter(it => typeMatch(kindOf(it.orig)));
+  if (LS_STATE.latest) {
+    const seen = new Map();
+    for (const it of list) if (!seen.has(it.orig)) seen.set(it.orig, it); // 清單已新到舊
+    list = [...seen.values()];
+  }
+  const s = LS_STATE.sort;
+  if (s === 'old') list = [...list].reverse();
+  else if (s === 'name') list = [...list].sort((a, b) => a.orig.localeCompare(b.orig, 'zh-Hant'));
+  else if (s === 'size') list = [...list].sort((a, b) => b.size - a.size);
+  return list;
+}
+function applyList() {
+  const wrap = document.getElementById('listWrap');
+  if (!wrap) return;
+  const list = filteredFiles();
+  const total = lastFiles.reduce((s, it) => s + it.size, 0);
+  const meta = document.getElementById('lmeta');
+  if (meta) meta.textContent = lastFiles.length + ' 個檔案 · 共 ' + fmtSize(total);
   const c = document.getElementById('count');
-  if (c) c.textContent = list.length + (query ? ' 個（搜尋）' : ' 個');
+  if (c) c.textContent = list.length + ' 個' + (LS_STATE.q ? '（搜尋）' : '');
+  if (!list.length) {
+    wrap.innerHTML = '<div class="card"><div class="empty">尚無檔案</div></div>';
+    return;
+  }
+  if (LS_STATE.view === 'grid') {
+    wrap.innerHTML = '<div class="grid">' + list.map(it => {
+      const b = badgeOf(it.orig);
+      const k = kindOf(it.orig);
+      const ex = expiryOf(it.mtime);
+      const thumb = k === 'img'
+        ? '<img loading="lazy" src="' + esc(fileUrl(it.name)) + '" alt="">'
+        : '<span class="tbadge">' + b.label + '</span>';
+      return '<div class="tile" data-name="' + esc(it.name) + '" title="' + esc(it.orig) + '">' +
+        '<div class="thumb">' + thumb + '</div>' +
+        '<div class="tinfo"><div class="tname">' + esc(it.orig) + '</div>' +
+        '<div class="tmeta"><span>' + fmtSize(it.size) + '</span>' +
+        '<span class="expiry' + (ex.soon ? ' soon' : '') + '">' + ex.text + '</span></div>' +
+        '</div></div>';
+    }).join('') + '</div>';
+    wrap.querySelectorAll('.tile').forEach(t =>
+      t.addEventListener('click', () => location.href = viewUrl(t.dataset.name)));
+    return;
+  }
+  wrap.innerHTML = '<div class="card"><table>' +
+    '<thead><tr><th>檔案</th><th>大小</th><th>時間</th><th>到期</th><th></th></tr></thead>' +
+    '<tbody id="rows"></tbody></table></div>';
+  const tb = document.getElementById('rows');
   for (const it of list) {
     const b = badgeOf(it.orig);
+    const ex = expiryOf(it.mtime);
     const tr = document.createElement('tr');
     tr.innerHTML =
       '<td class="mono" title="' + esc(it.orig) + '"><span class="badge ' + b.cls + '">' + b.label + '</span>' +
       esc(it.orig) + '</td>' +
       '<td style="white-space:nowrap">' + fmtSize(it.size) + '</td>' +
       '<td style="white-space:nowrap;color:var(--text-secondary)">' + fmtTime(it.mtime) + '</td>' +
+      '<td><span class="expiry' + (ex.soon ? ' soon' : '') + '">' + ex.text + '</span></td>' +
       '<td class="ops"><button data-act="copy" data-name="' + esc(it.name) + '">複製</button>' +
       '<a class="open" href="' + esc(fileUrl(it.name)) + '">下載</a></td>';
     tr.addEventListener('click', e => {
@@ -407,7 +567,6 @@ async function loadFiles(query) {
     });
     tb.appendChild(tr);
   }
-  // copy buttons (delegated)
   tb.querySelectorAll('button[data-act=copy]').forEach(btn =>
     btn.addEventListener('click', () => copyText(absUrl(btn.dataset.name), btn)));
 }
@@ -454,7 +613,7 @@ function upload(file) {
         result.querySelector('button').addEventListener('click', function () {
           copyText(data.url, this);
         });
-        loadFiles(document.getElementById('q') ? document.getElementById('q').value.trim() : '');
+        loadFiles();
       }
     } else {
       item.classList.add('err');
@@ -707,7 +866,8 @@ function viewText(name, orig, body) {
 function viewImage(name, orig, body) {
   const url = fileUrl(name);
   body.innerHTML =
-    '<div class="stage" id="stage"><img id="vimg" src="' + esc(url) + '" alt="' + esc(orig) + '"></div>' +
+    '<div class="stage" id="stage"><img id="vimg" src="' + esc(url) + '" alt="' + esc(orig) + '">' +
+    '<canvas id="annot" class="annot"></canvas></div>' +
     '<div class="ftool" id="ftool">' +
     fSlider('亮度', 'bright', 100, 0, 200) +
     fSlider('對比', 'contrast', 100, 0, 200) +
@@ -722,10 +882,26 @@ function viewImage(name, orig, body) {
     '<button id="fReset">重設</button>' +
     '<button id="fFit">適應視窗</button>' +
     '<button id="fSave" class="primary">另存新檔</button>' +
-    '</span></div>';
+    '</span>' +
+    '<div class="atool">' +
+    '<button id="aToggle" class="wbtn">標註</button>' +
+    '<span style="width:1px;height:18px;background:var(--border-default)"></span>' +
+    '<span class="swatch on" data-color="#ff5252" style="background:#ff5252" title="紅"></span>' +
+    '<span class="swatch" data-color="#ffd60a" style="background:#ffd60a" title="黃"></span>' +
+    '<span class="swatch" data-color="#34d399" style="background:#34d399" title="綠"></span>' +
+    '<span class="swatch" data-color="#60a5fa" style="background:#60a5fa" title="藍"></span>' +
+    '<span class="swatch" data-color="#ffffff" style="background:#ffffff" title="白"></span>' +
+    '<span style="width:1px;height:18px;background:var(--border-default)"></span>' +
+    '<button class="wbtn on" data-w="1">細</button>' +
+    '<button class="wbtn" data-w="2">中</button>' +
+    '<button class="wbtn" data-w="3">粗</button>' +
+    '<button class="wbtn" id="aClear">清除</button>' +
+    '</div></div>';
 
   const img = document.getElementById('vimg');
   const stage = document.getElementById('stage');
+  const annot = document.getElementById('annot');
+  const actx = annot.getContext('2d');
   const S = { scale: 1, tx: 0, ty: 0, rot: 0, fh: false, fv: false,
               bright: 100, contrast: 100, saturate: 100, blur: 0, sepia: 0, gray: 0 };
   const unit = v => (v === 0 || v === 100) ? '' : v / 100;
@@ -735,9 +911,11 @@ function viewImage(name, orig, body) {
       (S.sepia ? ' sepia(' + (S.sepia/100) + ')' : '') + (S.gray ? ' grayscale(' + (S.gray/100) + ')' : '');
   }
   function apply() {
-    img.style.transform = 'translate(' + S.tx + 'px,' + S.ty + 'px) scale(' + S.scale + ') rotate(' + S.rot + 'deg)' +
+    const t = 'translate(' + S.tx + 'px,' + S.ty + 'px) scale(' + S.scale + ') rotate(' + S.rot + 'deg)' +
       (S.fh ? ' scaleX(-1)' : '') + (S.fv ? ' scaleY(-1)' : '');
+    img.style.transform = t;
     img.style.filter = filterCSS();
+    annot.style.transform = 'translate(-50%,-50%) ' + t;
   }
   apply();
 
@@ -796,6 +974,72 @@ function viewImage(name, orig, body) {
   });
   document.getElementById('fFit').addEventListener('click', () => { S.scale = 1; S.tx = 0; S.ty = 0; apply(); });
 
+  // ── annotation (drawing on image) ──
+  const A = { on: false, color: '#ff5252', w: 1, drawing: false, last: null, dirty: false };
+  function sizeAnnot() {
+    if (!img.naturalWidth) return;
+    annot.width = img.naturalWidth;
+    annot.height = img.naturalHeight;
+    A.dirty = false;
+  }
+  if (img.complete) sizeAnnot();
+  else img.addEventListener('load', sizeAnnot);
+  function lineW() {
+    const base = Math.max(2, img.naturalWidth * 0.0015);
+    return [base, base * 2, base * 4][A.w - 1];
+  }
+  // screen point -> image (canvas) coordinates, via inverse of the element transform
+  function toAnnot(e) {
+    const sr = stage.getBoundingClientRect();
+    const m = new DOMMatrix(getComputedStyle(annot).transform);
+    return new DOMPoint(e.clientX - sr.left, e.clientY - sr.top).matrixTransform(m.inverse());
+  }
+  annot.addEventListener('pointerdown', e => {
+    if (!A.on) return;
+    e.preventDefault();
+    e.stopPropagation();
+    A.drawing = true;
+    A.last = toAnnot(e);
+    actx.strokeStyle = A.color;
+    actx.fillStyle = A.color;
+    actx.lineWidth = lineW();
+    actx.lineCap = 'round';
+    actx.lineJoin = 'round';
+    try { annot.setPointerCapture(e.pointerId); } catch (_) {}
+    actx.beginPath();
+    actx.arc(A.last.x, A.last.y, actx.lineWidth / 2, 0, Math.PI * 2);
+    actx.fill();
+    A.dirty = true;
+  });
+  annot.addEventListener('pointermove', e => {
+    if (!A.drawing) return;
+    const p = toAnnot(e);
+    actx.beginPath();
+    actx.moveTo(A.last.x, A.last.y);
+    actx.lineTo(p.x, p.y);
+    actx.stroke();
+    A.last = p;
+  });
+  ['pointerup','pointercancel'].forEach(ev =>
+    annot.addEventListener(ev, () => { A.drawing = false; }));
+  document.getElementById('aToggle').addEventListener('click', function () {
+    A.on = !A.on;
+    this.classList.toggle('on', A.on);
+    annot.classList.toggle('on', A.on);
+  });
+  document.querySelectorAll('#ftool .swatch').forEach(s => s.addEventListener('click', () => {
+    A.color = s.dataset.color;
+    document.querySelectorAll('#ftool .swatch').forEach(x => x.classList.toggle('on', x === s));
+  }));
+  document.querySelectorAll('#ftool .wbtn[data-w]').forEach(b => b.addEventListener('click', () => {
+    A.w = +b.dataset.w;
+    document.querySelectorAll('#ftool .wbtn[data-w]').forEach(x => x.classList.toggle('on', x === b));
+  }));
+  document.getElementById('aClear').addEventListener('click', () => {
+    actx.clearRect(0, 0, annot.width, annot.height);
+    A.dirty = false;
+  });
+
   // export as new copy via canvas
   document.getElementById('fSave').addEventListener('click', async () => {
     try {
@@ -811,6 +1055,7 @@ function viewImage(name, orig, body) {
       ctx.rotate(S.rot * Math.PI/180);
       ctx.scale(S.fh ? -1 : 1, S.fv ? -1 : 1);
       ctx.drawImage(img, -w/2, -h/2);
+      if (A.dirty) ctx.drawImage(annot, -w/2, -h/2);
       const isJpeg = /jpe?g/i.test(extOf(orig));
       const blob = await new Promise(res =>
         canvas.toBlob(res, isJpeg ? 'image/jpeg' : 'image/png', 0.92));
