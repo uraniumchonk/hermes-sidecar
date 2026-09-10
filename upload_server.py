@@ -176,7 +176,7 @@ pre.code{margin:0;padding:14px 18px;font-family:var(--mono);font-size:12.5px;lin
 .tk-k{color:#7dd3fc}
 .tk-t{color:#c4b5fd}
 /* markdown */
-.md{padding:24px 28px;max-width:860px;line-height:1.75;font-size:14px;overflow-x:auto}
+.md{padding:24px 28px;max-width:860px;margin:0 auto;line-height:1.75;font-size:14px;overflow-x:auto}
 .md h1{font-size:24px;font-weight:700;margin:20px 0 12px;line-height:1.3}
 .md h2{font-size:19px;font-weight:650;margin:18px 0 10px}
 .md h3{font-size:16px;font-weight:600;margin:16px 0 8px}
