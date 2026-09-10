@@ -422,7 +422,7 @@ async function showList() {
     '<header><h1>Meow File Share</h1>' +
     '<input class="search" id="q" type="search" placeholder="搜尋檔案名稱…（按 / 聚焦）" autocomplete="off" value="' + esc(LS_STATE.q) + '"></header>' +
     '<div class="drop" id="drop">' +
-    '<div class="big">把檔案拖進來，或點這裡選擇</div>' +
+    '<div class="big">把檔案拖進來、點這裡選擇、或 Ctrl+V 貼上圖片</div>' +
     '<div class="small">單檔最大 1GB · 限家庭網路 · 7 天後自動刪除</div>' +
     '<input type="file" id="file" multiple hidden></div>' +
     '<div class="queue" id="queue"></div>' +
@@ -629,6 +629,19 @@ function upload(file) {
   xhr.onerror = () => { item.classList.add('err'); meta.textContent = '網路錯誤'; };
   xhr.send(file);
 }
+
+// ── paste to upload（剪貼簿圖片直接貼上）──────────────────────────────
+document.addEventListener('paste', e => {
+  if (!document.getElementById('queue')) return;  // 僅主頁面處理
+  const cd = e.clipboardData;
+  if (!cd || !cd.files.length) return;
+  e.preventDefault();
+  for (const f of cd.files) {
+    const name = (f.name && f.name.trim()) ? f.name
+      : 'paste_' + Date.now() + (f.type ? '.' + f.type.split('/')[1] : '.png');
+    upload(new File([f], name, { type: f.type || 'application/octet-stream' }));
+  }
+});
 
 // ── markdown renderer (built-in, ~compact) ───────────────────────────
 function inlineMD(s) {
@@ -872,7 +885,7 @@ function viewImage(name, orig, body) {
   const url = fileUrl(name);
   body.innerHTML =
     '<div class="stage" id="stage"><img id="vimg" src="' + esc(url) + '" alt="' + esc(orig) + '">' +
-    '<canvas id="annot" class="annot"></canvas></div>' +
+    '<canvas id="annot" class="annot on"></canvas></div>' +
     '<div class="ftool" id="ftool">' +
     fSlider('亮度', 'bright', 100, 0, 200) +
     fSlider('對比', 'contrast', 100, 0, 200) +
@@ -889,7 +902,7 @@ function viewImage(name, orig, body) {
     '<button id="fSave" class="primary">另存新檔</button>' +
     '</span>' +
     '<div class="atool">' +
-    '<button id="aToggle" class="wbtn">標註</button>' +
+    '<button id="aToggle" class="wbtn on">標註</button>' +
     '<span style="width:1px;height:18px;background:var(--border-default)"></span>' +
     '<button class="wbtn on" data-tool="pen" title="自由畫筆">畫筆</button>' +
     '<button class="wbtn" data-tool="rect" title="拖出方框">方框</button>' +
@@ -946,19 +959,26 @@ function viewImage(name, orig, body) {
     S.scale = ns;
     apply();
   }, {passive: false});
-  // pan
+  // pan：右鍵拖曳=平移（任何時候）；左鍵拖曳=平移（僅標註關閉時）
   let drag = null;
-  stage.addEventListener('pointerdown', e => {
+  function startPan(e) {
     drag = {x: e.clientX, y: e.clientY, tx: S.tx, ty: S.ty};
-    stage.setPointerCapture(e.pointerId);
-  });
-  stage.addEventListener('pointermove', e => {
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch (_) {}
+  }
+  function doPan(e) {
     if (!drag) return;
     S.tx = drag.tx + (e.clientX - drag.x);
     S.ty = drag.ty + (e.clientY - drag.y);
     apply();
+  }
+  function endPan() { drag = null; }
+  stage.addEventListener('contextmenu', e => e.preventDefault());
+  stage.addEventListener('pointerdown', e => {
+    if (e.button === 2) { startPan(e); return; }        // 右鍵：永遠平移
+    if (e.button === 0 && !A.on) startPan(e);           // 左鍵：標註關閉時平移
   });
-  ['pointerup','pointercancel'].forEach(ev => stage.addEventListener(ev, () => drag = null));
+  stage.addEventListener('pointermove', doPan);
+  ['pointerup','pointercancel'].forEach(ev => stage.addEventListener(ev, endPan));
   stage.addEventListener('dblclick', () => {
     if (S.scale === 1) { S.scale = 2; } else { S.scale = 1; S.tx = 0; S.ty = 0; }
     apply();
@@ -989,7 +1009,7 @@ function viewImage(name, orig, body) {
 
   // ── annotation (drawing + shapes on image) ──
   const A = {
-    on: false, color: '#ff5252', w: 1,
+    on: true, color: '#ff5252', w: 1,
     tool: 'pen',        // 'pen' | 'rect' | 'ellipse' | 'arrow' | 'select'
     shapes: [],         // committed shapes (image/canvas coordinates)
     cur: null,          // shape being drawn
@@ -1128,8 +1148,11 @@ function viewImage(name, orig, body) {
       else { s.x2 = p.x; s.y2 = p.y; }
     }
   }
+  annot.addEventListener('contextmenu', e => e.preventDefault());
   annot.addEventListener('pointerdown', e => {
+    if (e.button === 2) { startPan(e); e.stopPropagation(); return; }  // 右鍵：平移
     if (!A.on) return;
+    if (e.button !== 0) return;                                          // 忽略中鍵
     e.preventDefault();
     e.stopPropagation();
     const p = toAnnot(e);
@@ -1199,6 +1222,9 @@ function viewImage(name, orig, body) {
     A.handle = -1;
     renderShapes();
   }));
+  // 右鍵平移：canvas 上的 pointermove/up 也要接 pan
+  annot.addEventListener('pointermove', doPan);
+  ['pointerup','pointercancel'].forEach(ev => annot.addEventListener(ev, endPan));
   document.getElementById('aToggle').addEventListener('click', function () {
     A.on = !A.on;
     this.classList.toggle('on', A.on);
