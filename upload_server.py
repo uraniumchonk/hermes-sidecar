@@ -9,8 +9,13 @@ LAN 檔案分享：
   - GET /files/<name> 開放整個 LAN，回傳正確 Content-Type（圖片可直接 markdown 顯示）
   - 背景執行緒定期清理超過 max-age-days（預設 7 天）的舊檔案，防止塞爆
   - 純 LAN 服務：所有端點只接受 192.168.0.* / localhost（2026-09-08 起移除
-    R2 presigned 公網分享與 Cloudflare tunnel 公網唯讀模式；公網檔案分享
-    改走 meow-share：share_cli.py + R2 public bucket share.thomas2018yulab.uk）
+    R2 presigned 公網分享與 Cloudflare tunnel 公網唯讀模式）
+
+公網分享（host 端負責，2026-09-11 起）：
+  - POST /publish 由本機（meowhome）用自己的 r2.env 憑證發布到 meow-share
+    （R2 public bucket share.thomas2018yulab.uk）；client（如 meowplace 的
+    MCP）只走 LAN 上傳，不需要任何 R2 憑證
+  - 管理 CLI 仍是 share_cli.py（list/info/delete/renew/cleanup）
 
 端點：
   GET  /                          內建前端（清單/搜尋/上傳/預覽/編輯，純靜態 HTML 零外部依賴）
@@ -18,6 +23,10 @@ LAN 檔案分享：
   GET  /edit/<name>               文字編輯器（SPA 路由，回同一前端頁）
   POST /upload?name=<filename>    body = raw bytes
        → {"path": "/abs/path", "url": "http://<host>/files/<uuid>.ext"}
+  POST /publish?file=<uuid>.ext   發布已上傳檔案到 meow-share（host 端 R2 憑證）
+       或 POST /publish?name=<filename> body = raw bytes（存檔＋發布一次完成）
+       可選 ?ttl=7d（預設 7d）
+       → {"url": "https://share.thomas2018yulab.uk/<token>"}
   GET  /files?q=<搜尋>            已上傳檔案清單（JSON：name/orig/size/mtime，新到舊，上限 100 筆）
   GET  /health                    → {"ok": true}
   GET  /files/<name>              讀回已上傳檔案（LAN 存取）
@@ -30,6 +39,8 @@ import hashlib
 import json
 import mimetypes
 import os
+import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -42,6 +53,32 @@ MAX_SIZE = 1024 * 1024 * 1024  # 1GB（內網專用，2026-08-30 由 50MB 調高
 DEFAULT_MAX_AGE_DAYS = 7
 LAN_PREFIX = '192.168.0.'  # 家庭 LAN 子網
 CHUNK = 8 * 1024 * 1024
+SHARE_CLI = os.path.expanduser('~/hermes-sidecar/share_cli.py')  # meow-share 發布（host 端）
+R2_ENV = os.path.expanduser('~/hermes-sidecar/r2.env')  # R2 憑證（gitignore，只在 host）
+PUBLISH_TIMEOUT = 600  # 秒；大檔上傳 R2 留足餘裕
+
+
+def _publish_to_meowshare(fp: str, ttl: str):
+    """host 端發布到 meow-share（R2 public bucket）。
+
+    回傳 (ok, url_or_err)。憑證、manifest、TTL 管理都在 share_cli.py。
+    """
+    if not os.path.isfile(SHARE_CLI) or not os.path.isfile(R2_ENV):
+        return False, 'meow-share 不可用：share_cli.py 或 r2.env 不存在（host 端）'
+    try:
+        out = subprocess.run(
+            [sys.executable, SHARE_CLI, 'publish', fp, '--ttl', ttl],
+            capture_output=True, text=True, timeout=PUBLISH_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        return False, 'publish 逾時（>600s）'
+    except OSError as e:
+        return False, f'publish 執行失敗: {e}'
+    if out.returncode != 0:
+        return False, (out.stderr or out.stdout).strip()[:300]
+    for line in out.stdout.splitlines():
+        if line.startswith('url:'):
+            return True, line.split('url:', 1)[1].strip()
+    return False, f'share_cli 回應缺少 url: {out.stdout[:300]}'
 
 
 # ── 內建前端（純靜態 HTML，無外部依賴；GET / 直接回傳）────────────────
@@ -1660,28 +1697,17 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, 'not found')
 
-    def do_POST(self):
-        if not lan_allowed(self.client_address[0]):
-            self._send(403, '{"error": "forbidden: source IP not allowed"}')
-            return
-        parsed = urlparse(self.path)
-        if parsed.path != '/upload':
-            self._send(404, 'not found')
-            return
-        qs = parse_qs(parsed.query)
-        name = (qs.get('name') or [''])[0].strip()
-        if not name:
-            self._send(400, '{"error": "missing ?name="}')
-            return
-        name = _fix_maybe_mojibake(name)
+    def _save_upload(self, name: str):
+        """串流 body 存成 uuid 檔（/upload 與 /publish 共用）。
+
+        成功回傳 (fp, lan_url, None)；失敗回傳 (None, http_code, err)。
+        """
         try:
             length = int(self.headers.get('Content-Length', 0))
         except ValueError:
-            self._send(400, '{"error": "bad Content-Length"}')
-            return
+            return None, 400, 'bad Content-Length'
         if length <= 0 or length > MAX_SIZE:
-            self._send(413, '{"error": "size out of range"}')
-            return
+            return None, 413, 'size out of range'
         _, ext = os.path.splitext(os.path.basename(name))
         ext = ext.lower() if 0 < len(ext) <= 10 else ''
         fname = f'{uuid.uuid4().hex}{ext}'
@@ -1705,7 +1731,65 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass  # sidecar 寫失敗不影響上傳
         url = f'http://{self.server.public_host}/files/{fname}'
+        return fp, url, None
+
+    def do_POST(self):
+        if not lan_allowed(self.client_address[0]):
+            self._send(403, '{"error": "forbidden: source IP not allowed"}')
+            return
+        parsed = urlparse(self.path)
+        if parsed.path == '/upload':
+            self._handle_upload()
+        elif parsed.path == '/publish':
+            self._handle_publish()
+        else:
+            self._send(404, 'not found')
+
+    def _handle_upload(self):
+        qs = parse_qs(urlparse(self.path).query)
+        name = (qs.get('name') or [''])[0].strip()
+        if not name:
+            self._send(400, '{"error": "missing ?name="}')
+            return
+        name = _fix_maybe_mojibake(name)
+        fp, url, err = self._save_upload(name)
+        if fp is None:
+            self._send(url, json.dumps({'error': err}))
+            return
         self._send(200, json.dumps({'path': fp, 'url': url}))
+
+    def _handle_publish(self):
+        """發布到 meow-share（host 端用自己的 R2 憑證）。
+
+        ?file=<uuid>.ext  發布已上傳檔案
+        ?name=<filename>  body = raw bytes，存檔＋發布一次完成
+        ?ttl=7d          可選，預設 7d
+        """
+        qs = parse_qs(urlparse(self.path).query)
+        ttl = (qs.get('ttl') or ['7d'])[0].strip() or '7d'
+        file = (qs.get('file') or [''])[0].strip()
+        if file:
+            fname = os.path.basename(file)  # 防 path traversal
+            fp = os.path.join(self.server.dir, fname)
+            if not os.path.isfile(fp):
+                self._send(404, json.dumps({'error': f'file not found: {fname}'}))
+                return
+        else:
+            name = (qs.get('name') or [''])[0].strip()
+            if not name:
+                self._send(400, '{"error": "missing ?name= (or ?file=<uploaded>)"}')
+                return
+            name = _fix_maybe_mojibake(name)
+            fp, code, err = self._save_upload(name)
+            if fp is None:
+                self._send(code, json.dumps({'error': err}))
+                return
+        ok, result = _publish_to_meowshare(fp, ttl)
+        if not ok:
+            self._send(503, json.dumps({'error': f'meow-share publish 失敗: {result}'},
+                                       ensure_ascii=False))
+            return
+        self._send(200, json.dumps({'url': result}, ensure_ascii=False))
 
     def log_message(self, format, *args):  # 安靜模式
         pass
