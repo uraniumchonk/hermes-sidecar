@@ -13,7 +13,7 @@ fileshare MCP Server - LAN 檔案分享 + meow-share 公網分享上傳工具（
 部署：
   meowhome（服務本機）：  python3 mcp.py
   meowplace（遠端上傳）： FILESHARE_URL=http://192.168.0.160:18778 python3 mcp.py
-  （public=True 只在 meowhome 可用，需要本機 share_cli.py）
+  （public=True 只在 meowhome 可用，需要本機 share_cli.py + r2.env 憑證）
 
 回傳的 URL 可直接包進 markdown：
   圖片：![img](<url>)
@@ -33,6 +33,7 @@ BASE_URL = os.environ.get('FILESHARE_URL', 'http://127.0.0.1:18778')
 MAX_SIZE = 1024 * 1024 * 1024  # 1GB（與伺服器端一致，2026-08-30 由 50MB 調高）
 UPLOAD_TIMEOUT = 600  # 秒；1GB 走 LAN 也要留足餘裕
 SHARE_CLI = os.path.expanduser('~/hermes-sidecar/share_cli.py')
+R2_ENV = os.path.expanduser('~/hermes-sidecar/r2.env')  # R2 憑證（gitignore，只在 meowhome）
 
 
 def _err(msg: str) -> dict:
@@ -54,8 +55,9 @@ def share_file(path: str, public: bool = False) -> dict:
 
     if public:
         # meow-share：R2 public bucket + custom domain（短 URL、定時過期）
-        if not os.path.isfile(SHARE_CLI):
-            return _err(f"meow-share 不可用：{SHARE_CLI} 不存在（public=True 只在 meowhome 可用）")
+        if not os.path.isfile(SHARE_CLI) or not os.path.isfile(R2_ENV):
+            return _err(f"meow-share 不可用：share_cli.py 或 r2.env 不存在"
+                        f"（public=True 只在 meowhome 可用，請改用 LAN 分享或找 meowhome 的 agent）")
         try:
             out = subprocess.run(
                 [sys.executable, SHARE_CLI, 'publish', path, '--ttl', '7d'],
