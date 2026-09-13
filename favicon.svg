@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!-- 貓耳（先畫，底部被徽章蓋住） -->
-  <path d="M9 12 L15 0 L26 9 Z" fill="#F6821F"/>
-  <path d="M55 12 L49 0 L38 9 Z" fill="#F6821F"/>
+  <path d="M8 12 L14 0 L25 9 Z" fill="#F6821F"/>
+  <path d="M56 12 L50 0 L39 9 Z" fill="#F6821F"/>
   <!-- 徽章：橘框再加寬 1px -->
-  <rect x="7" y="8" width="50" height="56" rx="10" fill="#F6821F"/>
+  <rect x="6" y="8" width="52" height="56" rx="10" fill="#F6821F"/>
   <!-- 內耳 -->
-  <path d="M13 8.5 L15.5 2.5 L20.5 7.5 Z" fill="#FFC48F"/>
-  <path d="M51 8.5 L48.5 2.5 L43.5 7.5 Z" fill="#FFC48F"/>
+  <path d="M12 8.5 L14.5 2.5 L19.5 7.5 Z" fill="#FFC48F"/>
+  <path d="M52 8.5 L49.5 2.5 L44.5 7.5 Z" fill="#FFC48F"/>
   <!-- 檔案（白色、右上角折角，保持原本大小） -->
   <path d="M20 14 H36 L47 25 V57 Q47 60 44 60 H20 Q17 60 17 57 V17 Q17 14 20 14 Z" fill="#FFFFFF"/>
   <path d="M36 14 L47 25 H40 Q36 25 36 21 Z" fill="#FFD9B8"/>
