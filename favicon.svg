@@ -7,10 +7,10 @@
   <!-- 內耳 -->
   <path d="M13.5 17 L16.5 6 L23.5 13 Z" fill="#FFC48F"/>
   <path d="M50.5 17 L47.5 6 L40.5 13 Z" fill="#FFC48F"/>
-  <!-- 檔案（白色、右上角折角，放大版） -->
-  <path d="M20 14 H36 L47 25 V57 Q47 60 44 60 H20 Q17 60 17 57 V17 Q17 14 20 14 Z" fill="#FFFFFF"/>
-  <path d="M36 14 L47 25 H40 Q36 25 36 21 Z" fill="#FFD9B8"/>
+  <!-- 檔案（白色、右上角折角，放大版：橘框只剩細邊） -->
+  <path d="M14 13 H36 L54 31 V58 Q54 61 51 61 H14 Q10 61 10 58 V17 Q10 13 14 13 Z" fill="#FFFFFF"/>
+  <path d="M36 13 L54 31 H40 Q36 31 36 27 Z" fill="#FFD9B8"/>
   <!-- 上傳箭頭 -->
-  <path d="M32 53 V32" stroke="#F6821F" stroke-width="4" stroke-linecap="round" fill="none"/>
-  <path d="M25 39 L32 32 L39 39" stroke="#F6821F" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M32 55 V36" stroke="#F6821F" stroke-width="4.5" stroke-linecap="round" fill="none"/>
+  <path d="M24 44 L32 36 L40 44" stroke="#F6821F" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>
