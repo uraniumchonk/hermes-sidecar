@@ -1,16 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
   <!-- 貓耳（先畫，底部被徽章蓋住） -->
-  <path d="M6 24 L13 0 L30 14 Z" fill="#F6821F"/>
-  <path d="M58 24 L51 0 L34 14 Z" fill="#F6821F"/>
-  <!-- 徽章：貼滿畫布 -->
-  <rect x="0" y="10" width="64" height="54" rx="10" fill="#F6821F"/>
+  <path d="M13 12 L18 0 L29 9 Z" fill="#F6821F"/>
+  <path d="M51 12 L46 0 L35 9 Z" fill="#F6821F"/>
+  <!-- 徽章：縮小，橘框只剩細邊 -->
+  <rect x="11" y="8" width="42" height="56" rx="10" fill="#F6821F"/>
   <!-- 內耳 -->
-  <path d="M13.5 17 L16.5 6 L23.5 13 Z" fill="#FFC48F"/>
-  <path d="M50.5 17 L47.5 6 L40.5 13 Z" fill="#FFC48F"/>
-  <!-- 檔案（白色、右上角折角，放大版：橘框只剩細邊） -->
-  <path d="M14 13 H36 L54 31 V58 Q54 61 51 61 H14 Q10 61 10 58 V17 Q10 13 14 13 Z" fill="#FFFFFF"/>
-  <path d="M36 13 L54 31 H40 Q36 31 36 27 Z" fill="#FFD9B8"/>
+  <path d="M16.5 8.5 L19 2.5 L24 7.5 Z" fill="#FFC48F"/>
+  <path d="M47.5 8.5 L45 2.5 L40 7.5 Z" fill="#FFC48F"/>
+  <!-- 檔案（白色、右上角折角，保持原本大小） -->
+  <path d="M20 14 H36 L47 25 V57 Q47 60 44 60 H20 Q17 60 17 57 V17 Q17 14 20 14 Z" fill="#FFFFFF"/>
+  <path d="M36 14 L47 25 H40 Q36 25 36 21 Z" fill="#FFD9B8"/>
   <!-- 上傳箭頭 -->
-  <path d="M32 55 V36" stroke="#F6821F" stroke-width="4.5" stroke-linecap="round" fill="none"/>
-  <path d="M24 44 L32 36 L40 44" stroke="#F6821F" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  <path d="M32 50 V33" stroke="#F6821F" stroke-width="4" stroke-linecap="round" fill="none"/>
+  <path d="M25.5 39.5 L32 33 L38.5 39.5" stroke="#F6821F" stroke-width="4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
 </svg>
