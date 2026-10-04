@@ -124,6 +124,7 @@ R2_BUCKET=<bucket name>
 R2_ACCESS_KEY=<R2 API token access key>
 R2_SECRET_KEY=<R2 API token secret key>
 R2_URL_EXPIRY=604800   # presigned URL lifetime in seconds (max 604800 = 7d)
+MEOW_SHARE_DOMAIN=share.example.com   # custom domain used by share_cli.py
 ```
 
 If any of the four required vars is missing, `public` upload is disabled and

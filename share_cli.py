@@ -41,8 +41,6 @@ R2_ENV = os.path.expanduser('~/hermes-sidecar/r2.env')
 CF_ENV = os.path.expanduser('~/.config/cloudflare/credentials.env')
 MANIFEST = os.path.expanduser('~/.config/meow-share/manifest.json')
 BUCKET = 'meow-share'
-DOMAIN = 'share.example.com'
-BASE_URL = f'https://{DOMAIN}'
 DEFAULT_TTL = '7d'
 CHUNK = 1024 * 1024
 
@@ -66,6 +64,9 @@ CF = load_env(CF_ENV)
 R2_ACCOUNT_ID = R2.get('R2_ACCOUNT_ID', '')
 R2_ACCESS_KEY = R2.get('R2_ACCESS_KEY', '')
 R2_SECRET_KEY = R2.get('R2_SECRET_KEY', '')
+# 公開網域（R2 custom domain）寫在 r2.env 的 MEOW_SHARE_DOMAIN，不進版控
+DOMAIN = os.environ.get('MEOW_SHARE_DOMAIN') or R2.get('MEOW_SHARE_DOMAIN', 'share.example.com')
+BASE_URL = f'https://{DOMAIN}'
 R2_REGION = 'auto'
 R2_SERVICE = 's3'
 
